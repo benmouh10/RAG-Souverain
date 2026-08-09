@@ -1,0 +1,33 @@
+# API & UI
+streamlit>=1.40.0
+
+# Ingestion — Module 1
+pdfplumber>=0.11.4
+pymupdf>=1.24.10
+pytesseract>=0.3.13
+Pillow>=10.4.0
+
+# Indexation & retrieval — Sprint 2
+sentence-transformers>=3.3.0
+chromadb>=0.5.18
+transformers>=4.46.0
+rank-bm25>=0.2.2
+
+# LLM & Génération — Sprint 5
+requests>=2.31.0
+langchain-openai>=0.1.0
+langchain-huggingface>=0.0.3
+
+# Evaluation (Sprint 7)
+ragas>=0.2.0
+datasets>=2.18.0
+
+# Tests
+pytest>=8.0.0
+pytest-cov>=5.0.0
+
+# PDF Export
+fpdf2>=2.8.0
+
+# File watcher for continuous ingestion
+watchdog>=4.0.0

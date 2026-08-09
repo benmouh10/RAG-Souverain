@@ -1,0 +1,5 @@
+Ceci est un fichier texte de test pour le RAG Souverain.
+Il contient plusieurs lignes de texte pour vérifier l'ingestion et l'encodage UTF-8.
+
+Caractères spéciaux français : éèàôûçñ
+Accents et ligatures : œæ

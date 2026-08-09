@@ -1,0 +1,116 @@
+# encoding: utf-8
+# ==============================================================================
+#  DOCKER COMPOSE — RAG Souverain
+#  Orchestration avec réseau isolé + accès Ollama hôte
+#  Sprint 8 : Déploiement & Souveraineté
+# ==============================================================================
+
+
+
+services:
+  rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-souverain
+    restart: unless-stopped
+
+    # ── Exposition du port Streamlit ──
+    ports:
+      - "8501:8501"
+
+    # ── Volumes persistants ──
+    # ChromaDB : la base vectorielle survit aux redémarrages
+    # Documents : permet d'ajouter des fichiers sans rebuild
+    # Modèle cache : pré-chargé dans l'image, mais en volume pour flexibilité
+    volumes:
+      - ./data/chroma:/app/data/chroma
+      - ./data/rag.db:/app/data/rag.db
+      - ./data/documents:/app/data/documents:ro
+
+    # ── Accès à Ollama sur la machine hôte ──
+    # host.docker.internal pointe vers l'hôte Windows/Mac/Linux
+    # Le conteneur peut joindre Ollama via http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # ── Variables d'environnement ──
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - HF_HOME=/app/.cache/huggingface
+      - SENTENCE_TRANSFORMERS_HOME=/app/.cache/huggingface
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_OFFLINE=1
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+    # ── DNS local forcé pour bloquer toutes les résolutions externes
+    dns:
+      - 127.0.0.1
+
+    # ── Réseau isolé
+    networks:
+      - rag_network
+
+    # ── Healthcheck ──
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # ── Ressources ──
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+    # ── Permissions réseau pour iptables (souveraineté) ──
+    cap_add:
+      - NET_ADMIN
+
+
+  # ── Service: File Watcher for continuous ingestion ──
+  ingestion-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-ingestion-watcher
+    restart: unless-stopped
+    command: python -m app.ingestion.watcher
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - HF_HOME=/app/.cache/huggingface
+      - SENTENCE_TRANSFORMERS_HOME=/app/.cache/huggingface
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_OFFLINE=1
+    dns:
+      - 127.0.0.1
+    networks:
+      - rag_network
+
+
+# ── Reseau isole (cle de la souverainete) ──
+# Le conteneur ne peut communiquer qu'avec :
+#   1. L'hote via host.docker.internal (Ollama uniquement)
+#   2. Les volumes montes (documents, base de donnees)
+# Note: internal:true casse le port publishing sur Docker Desktop Windows.
+# La souverainete reseau est appliquee via iptables dans le conteneur.
+networks:
+  rag_network:
+    driver: bridge
+    name: rag_souverain_network
+
+
+# ── Volumes ──
+# (Using bind mounts for data persistence — no named volumes needed)

@@ -1,0 +1,14 @@
+data/chroma/
+data/chroma_test/
+data/evaluation_report.csv
+data/uploads/
+data/*.db
+data/*.sqlite3
+data/audit.log
+chroma.sqlite3
+tmp_*.py
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/
