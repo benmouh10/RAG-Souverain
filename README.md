@@ -84,6 +84,5 @@ Les fichiers `test_pipeline_complet.py` et `test_rag.py` sont des tests d'intég
 
 ## Documentation
 
-- `CONCEPTION_STUDY.md` — étude de conception complète (exigences, architecture, schéma, RBAC).
 - `DEPLOYMENT.md` — déploiement Docker et souveraineté réseau.
 - `TESTING_GUIDE.md` — guide des tests d'acceptation.
