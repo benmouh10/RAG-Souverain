@@ -24,13 +24,28 @@ _cross_encoder = None
 
 
 def _get_cross_encoder():
-    """Lazy-load CrossEncoder (downloaded once, cached in HF_HOME)."""
+    """Lazy-load CrossEncoder (downloaded once, cached in HF_HOME).
+
+    Chargement **hors-ligne** : on résout d'abord le snapshot local via
+    ``_resolve_local_sentence_transformers_path`` (même mécanisme que le modèle
+    d'embeddings), sinon ``CrossEncoder(repo_id)`` tenterait un
+    ``snapshot_download`` réseau qui échoue en mode OFFLINE.
+    """
     global _cross_encoder
     if _cross_encoder is None:
         try:
             from sentence_transformers import CrossEncoder
-            logger.info("Loading CrossEncoder reranker: %s", _RERANKER_MODEL)
-            _cross_encoder = CrossEncoder(_RERANKER_MODEL, max_length=512)
+
+            from app.indexing.vector_store import _resolve_local_sentence_transformers_path
+
+            cache_root = os.getenv("HF_HOME", os.getenv("SENTENCE_TRANSFORMERS_HOME", ""))
+            model_path = (
+                _resolve_local_sentence_transformers_path(_RERANKER_MODEL, cache_root)
+                if cache_root
+                else _RERANKER_MODEL
+            )
+            logger.info("Loading CrossEncoder reranker: %s (local path: %s)", _RERANKER_MODEL, model_path)
+            _cross_encoder = CrossEncoder(model_path, max_length=512)
             logger.info("CrossEncoder reranker loaded successfully.")
         except Exception as e:
             logger.warning(
@@ -116,7 +131,7 @@ class Retriever:
         query: str,
         *,
         top_k: int = 6,
-        min_score: float = 0.65,
+        min_score: float = 0.0,
         where: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
         """
@@ -153,6 +168,16 @@ class Retriever:
             # Step 2: BM25 keyword search
             _ensure_bm25_index(self.vector_store)
             bm25_results = self._bm25_search(query, top_k=fetch_count)
+
+            # Un filtre ``where`` (fichier nommé dans la question) ne s'applique
+            # qu'à la recherche vectorielle côté ChromaDB : on restreint aussi les
+            # résultats BM25 pour ne pas réinjecter d'autres fichiers via la fusion.
+            if where is not None:
+                wanted = where.get("source_file")
+                bm25_results = [
+                    r for r in bm25_results
+                    if r.metadata.get("source_file") == wanted
+                ]
 
             # Step 3: Merge with RRF
             merged = self._rrf_merge(vector_results, bm25_results, top_k=fetch_count)

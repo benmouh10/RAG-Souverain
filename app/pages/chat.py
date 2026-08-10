@@ -20,6 +20,7 @@ from app.app_ui import (
     is_greeting,
     truncate_snippet,
 )
+from app.core.rag_engine import _extract_document_filter, build_search_query
 
 logger = logging.getLogger("rag_ui")
 
@@ -136,6 +137,22 @@ def render_chat_page() -> None:
             if role == "assistant" and msg.get("citations"):
                 _render_citations(msg["citations"])
 
+    # Mo2 / UC_Export — export de la conversation en PDF (rôle User et Admin).
+    if st.session_state["messages"]:
+        from app.app_ui import export_chat_to_pdf
+
+        pdf_bytes = export_chat_to_pdf(
+            st.session_state["messages"],
+            st.session_state.get("username", "user"),
+        )
+        st.download_button(
+            "Exporter la conversation (PDF)",
+            data=pdf_bytes,
+            file_name="conversation_rag_souverain.pdf",
+            mime="application/pdf",
+            key="export_pdf_button",
+        )
+
     st.markdown('<a id="bottom-of-chat"></a>', unsafe_allow_html=True)
 
     user_query = st.chat_input("Ask your question to the sovereign RAG...")
@@ -151,10 +168,36 @@ def render_chat_page() -> None:
             full_response = GREETING_RESPONSE
             source_payloads: list[dict] = []
             citations: list[dict] = []
+        elif rag.llm is not None and rag.llm.circuit_open:
+            # M2 — circuit breaker ouvert : réponse gracieuse immédiate, sans
+            # passer par le retriever ni le LLM (le trafic réseau est inutile).
+            full_response = (
+                "Ollama est temporairement indisponible (trop d'échecs récents). "
+                "Vérifiez que le service est démarré, puis réessayez."
+            )
+            results = []
+            formatted_context = ""
+            source_payloads: list[dict] = []
+            citations: list[dict] = []
+            st.warning(full_response)
         else:
+            # Historique de conversation (hors message courant) — sert à la
+            # réécriture des questions de suivi et à la génération.
+            conv_history = [
+                {"role": m["role"], "content": m.get("content", "")}
+                for m in st.session_state["messages"][:-1]
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+
+            # Suivi conversationnel : « and now ? » devient une requête autonome
+            # adossée à la dernière question ; un fichier nommé dans la question
+            # déclenche une recherche ciblée (filtre ``where``).
+            search_query = build_search_query(user_query, conv_history)
+            where = _extract_document_filter(search_query, rag.vector_store)
+
             with st.status("1. Querying ChromaDB...", expanded=True) as status:
                 try:
-                    results = rag.retriever.retrieve(user_query, top_k=rag.top_k)
+                    results = rag.retriever.retrieve(search_query, top_k=rag.top_k, where=where)
                     formatted_context = rag.retriever.format_context(results)
                 except ConnectionError:
                     full_response = "ChromaDB is inaccessible. Make sure the service is running."
@@ -176,11 +219,6 @@ def render_chat_page() -> None:
                     full_response = "LLM unavailable — Ollama not found. Start Ollama with `ollama serve`."
                     response_area.markdown(f"<div class='chat-assistant'>{full_response}</div>", unsafe_allow_html=True)
                 else:
-                    conv_history = [
-                        {"role": m["role"], "content": m.get("content", "")}
-                        for m in st.session_state["messages"][:-1]
-                        if m.get("role") in ("user", "assistant") and m.get("content")
-                    ]
                     try:
                         for chunk in rag.llm.generate_stream(user_query, formatted_context, conversation_history=conv_history):
                             full_response += chunk
