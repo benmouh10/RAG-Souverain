@@ -46,7 +46,7 @@ rag-souverain/
 │   ├── evaluation/             # Pipeline d'évaluation Ragas
 │   └── pages/                  # Écrans (auth, chat, indexation, etc.)
 ├── data/                       # Chroma, documents, uploads, bases SQLite
-├── tests/                      # Suite pytest (53 tests)
+├── tests/                      # Suite pytest (105 unit + 14 integration)
 ├── requirements.txt
 ├── pytest.ini
 ├── Dockerfile · docker-compose.yml · entrypoint.sh
@@ -75,12 +75,46 @@ Compte par défaut : `admin` / `admin` (à changer en production).
 
 ## Tests
 
+Le run par défaut n'exécute **que les tests unitaires** (les tests d'intégration sont
+marqués `@pytest.mark.integration` et exclus via `pytest.ini` → `addopts = -m "not integration"`) :
+
 ```bash
-python -m pytest tests/ -q --ignore=tests/test_pipeline_complet.py --ignore=tests/test_rag.py
+python -m pytest tests/ -q
+# Attendu : 105 passed, 14 deselected
 ```
 
-Les fichiers `test_pipeline_complet.py` et `test_rag.py` sont des tests d'intégration
-(exigent Ollama / infrastructure réelle) et sont marqués `@pytest.mark.integration`.
+Tests d'intégration (exigent Ollama démarré + modèle d'embeddings réel) :
+
+```bash
+ollama serve &                       # si Ollama n'est pas déjà démarré
+python -m pytest tests/ -m integration -v
+# Attendu : 14 passed (9 souveraineté réseau + 5 pipeline/RAG/embeddings)
+```
+
+Suite complète (unitaires + intégration) :
+
+```bash
+python -m pytest tests/ -q && python -m pytest tests/ -m integration -q
+# 105 passed + 14 passed
+```
+
+### Validation dans le conteneur (NFR-01 — souveraineté réseau)
+
+Les tests sont embarqués dans l'image Docker (exécutables en isolation réseau) :
+
+```bash
+docker compose up --build -d
+docker exec rag-souverain python -m pytest tests/ -m "not integration" -q   # 105 passed
+docker exec rag-souverain python -m pytest tests/ -m integration -q         # 14 passed
+docker exec rag-souverain python tests/test_network_sovereignty.py          # audit live : 9/9 PASS
+```
+
+Démonstration devant jury (blocage Internet effectif) :
+
+```bash
+docker exec rag-souverain python -c "import urllib.request; print(urllib.request.urlopen('https://google.com', timeout=3).status)"
+# Attendu : URLError — Temporary failure in name resolution  →  aucune donnée ne sort
+```
 
 ## Documentation
 

@@ -1,0 +1,35 @@
+@startuml sequence_user_management
+' Diagramme de séquence — Gestion des utilisateurs (Admin, Mo7)
+!theme plain
+actor Administrateur
+participant "pages/users.py" as Page
+participant "session.py\nrequire_admin()" as Session
+participant "Database" as DB
+
+Administrateur -> Page: ouvre "User Management"
+Page -> Session: require_admin() — garde serveur (M1)
+Session --> Page: refus si rôle != admin (sinon accès)
+Page -> DB: list_users()
+DB --> Page: list<User>
+
+alt création d'un utilisateur
+  Administrateur -> Page: nom, mot de passe (≥ 4 car.), rôle
+  Page -> Page: contrôles (champs vides, doublon, longueur)
+  Page -> DB: create_user(username, hash(password), role)
+  alt nom déjà pris
+    DB --> Page: None
+    Page --> Administrateur: "Nom d'utilisateur déjà existant"
+  else succès
+    DB --> Page: User (mot de passe stocké hashé, scrypt+sel)
+    Page --> Administrateur: compte créé avec son rôle
+  end
+else suppression d'un utilisateur
+  Administrateur -> Page: sélectionne un compte (≠ soi-même)
+  Page -> DB: delete_user(user_id)
+  alt succès
+    Page --> Administrateur: compte supprimé
+  else échec
+    Page --> Administrateur: erreur de suppression
+  end
+end
+@enduml

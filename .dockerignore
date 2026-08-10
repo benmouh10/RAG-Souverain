@@ -13,7 +13,6 @@ data/uploads
 data/rag.db
 data/evaluation_report.csv
 data/test_pipeline_database.db
-tests/
 tmp_*.py
 .vscode
 .venv

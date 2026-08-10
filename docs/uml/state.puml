@@ -1,0 +1,60 @@
+@startuml state
+' Diagramme d'états — Session utilisateur, versionnage des fichiers & santé LLM
+!theme plain
+skinparam state {
+  BorderColor #334155
+  BackgroundColor #F8FAFC
+}
+
+state "Cycle de vie de la session (RBAC)" as S {
+  [*] --> Deconnecte
+  Deconnecte --> Connexion : saisie des identifiants
+  Connexion --> Deconnecte : hash invalide
+  Connexion --> Authentifie : _verify_password OK
+  state Authentifie {
+    [*] --> RoleAdmin : role = "admin"
+    [*] --> RoleUser : role = "user"
+  }
+  Authentifie --> Deconnecte : sign_out() / fin de session
+}
+
+state "Cycle de vie d'un fichier dans l'index (versionnage global C1/Mo4)" as F {
+  [*] --> Absent
+  Absent --> V1 : record_ingestion (nouveau fichier / purge)
+  V1 --> V2 : ré-indexation (nouveau hash)
+  V2 --> V3 : ré-indexation (nouveau hash)
+  V1 --> Absent : delete_by_source(file) — dernière version
+  V2 --> Absent : delete_by_source(file) — dernière version
+  V3 --> Absent : delete_by_source(file) — dernière version
+  Absent --> V1 : clear() — purge totale de la collection (Mo8)
+  note right of V2
+    les chunks des anciennes versions
+    restent dans Chroma jusqu'au
+    delete_by_source (côté Chroma),
+    mais le versionnage (doc_versions)
+    est global : clé = filename.
+  end note
+}
+
+note bottom of Absent
+  Mo8 : la suppression d'un fichier
+  (delete_by_source) ramène directement
+  le fichier à l'état Absent ; la purge
+  totale (clear) remet toute la
+  collection à Absent.
+end note
+
+state "Santé du LLM Ollama (M2)" as H {
+  [*] --> Up : health_check() OK
+  Up --> Up : generate() OK (compteur remis à zéro)
+  Up --> Degrade : 1-2 échecs consécutifs
+  Degrade --> Up : health_check() OK
+  Degrade --> Ouvert : 3 échecs consécutifs (CIRCUIT_BREAKER_FAILURES)
+  Ouvert --> Up : health_check() OK / cooldown expiré (30 s)
+  note right of Ouvert
+    pendant l'ouverture, generate() est
+    court-circuité sans appel réseau
+    (réponse dégradée immédiate).
+  end note
+}
+@enduml

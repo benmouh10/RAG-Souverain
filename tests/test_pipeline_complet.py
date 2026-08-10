@@ -27,6 +27,65 @@ TEST_CHROMA_COLLECTION = "rag_documents_test"
 SEPARATOR = "=" * 72
 
 @pytest.mark.integration
+def test_pipeline_complet_roundtrip(tmp_path):
+    """Test d'intégration du pipeline Parser → Chunker → VectorStore → Search.
+
+    Nécessite le modèle d'embeddings réel (LocalEmbeddingFunction) : exclu du
+    CI rapide (pytest.ini), à exécuter dans l'image Docker ou avec le modèle
+    en cache. Vérifie qu'un document TXT + une base SQL sont correctement
+    parsés, découpés, indexés puis retrouvés par recherche.
+    """
+    from app.ingestion.chunker import AdaptiveChunker
+    from app.ingestion.parser import DocumentParser, SQLParser
+    from app.indexing.vector_store import ChromaVectorStore
+
+    # 1. Préparation des données de test (isolées dans tmp_path)
+    doc_dir = tmp_path / "documents"
+    doc_dir.mkdir()
+    (doc_dir / "test.txt").write_text(
+        "Le RAG Souverain est un systeme local de question reponse.\n"
+        "Jean Dupont est developpeur au sein de la societe.\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "employes.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE employes (id INTEGER PRIMARY KEY, nom TEXT, prenom TEXT, poste TEXT);
+        INSERT INTO employes (nom, prenom, poste) VALUES ('Dupont', 'Jean', 'Developpeur');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # 2. Parsing (TXT + SQL)
+    parser = DocumentParser(ocr_enabled=False)
+    documents = parser.parse_directory(doc_dir)
+    assert documents, "Aucun document TXT parsé."
+
+    sql_parser = SQLParser(db_path)
+    documents.append(sql_parser.to_parsed_documents())
+    sql_parser.close()
+
+    # 3. Chunking
+    chunker = AdaptiveChunker()
+    chunks = chunker.chunk_documents(documents)
+    assert chunks, "Aucun chunk généré."
+
+    # 4. Indexation dans ChromaDB (modèle réel)
+    vs = ChromaVectorStore(
+        persist_directory=str(tmp_path / "chroma_test"),
+        collection_name="test_pipeline_complet",
+    )
+    vs.initialize_collection(reset=True)
+    added = vs.add_chunks(chunks)
+    assert added == len(chunks)
+
+    # 5. Recherche
+    results = vs.search("poste de Jean Dupont", top_k=3)
+    assert results, "La recherche vectorielle ne retourne aucun résultat."
+    assert any("Dupont" in r.content or "developpeur" in r.content for r in results)
 
 
 def create_test_database() -> None:

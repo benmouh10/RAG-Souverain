@@ -1,0 +1,35 @@
+@startuml sequence_evaluation
+' Diagramme de séquence — Évaluation Ragas (Admin)
+!theme plain
+actor Administrateur
+participant "pages/evaluation.py" as Page
+participant "session.py\nrequire_admin()" as Session
+participant "run_evaluation()" as Run
+participant "RAGEngine\n(app/core/rag_engine.py)" as Engine
+participant "Ragas (Ollama-juge)" as Ragas
+participant "QueryLogger" as QL
+participant "data/evaluation_report.csv" as CSV
+
+Administrateur -> Page: clic "Lancer l'évaluation"
+Page -> Session: require_admin() — garde serveur (M1)
+Session --> Page: accès autorisé (rôle admin)
+Page -> Run: run_evaluation(progress_callback, timeout_seconds=30)
+Run -> Run: vérifie ChromaDB (collection rag_documents)
+loop pour chaque question du GOLD_DATASET (30)
+  Run -> Engine: answer(question)  -- _run_with_timeout(30 s)
+  alt timeout dépassé
+    Engine --> Run: TimeoutError → résultat marqué en échec
+  else succès
+    Engine --> Run: (réponse, contextes)
+    Run -> QL: log(question, top1_score, latence, sources) (M4)
+  end
+  alt Ragas disponible (Ollama)
+    Run -> Ragas: évaluer(question, réponse, contextes, référence)
+    Ragas --> Run: faithfulness, relevance (budget 30 s)
+  end
+  Run -> Page: progress_callback(done, total)
+end
+Run -> CSV: export_results(results)
+Run --> Page: résultats agrégés + rapport
+Page --> Administrateur: rapport détaillé (data/evaluation_report.csv)
+@enduml

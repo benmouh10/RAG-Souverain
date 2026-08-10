@@ -1,0 +1,25 @@
+@startuml sequence_export_conversation
+' Diagramme de séquence — Export de la conversation en PDF (UC_Export, Mo2)
+!theme plain
+actor Utilisateur
+participant "pages/chat.py" as Chat
+participant "export_chat_to_pdf\n(app/app_ui.py)" as Export
+participant "fpdf2" as FPDF
+
+Utilisateur -> Chat: clique « Exporter la conversation (PDF) »
+Chat -> Chat: session_state["messages"] non vide ?
+alt aucune conversation
+  Chat --> Utilisateur: bouton masqué
+else messages présents
+  Chat -> Export: export_chat_to_pdf(messages, username)
+  Export -> Export: sanitisation des caractères (hors latin-1)
+  Export -> FPDF: génération (en-tête, rôles, contenus, sources)
+  FPDF --> Export: document PDF (bytes)
+  Export --> Chat: bytes du PDF
+  Chat --> Utilisateur: st.download_button → téléchargement
+  note right of Chat
+    UC_Export est accessible à l'utilisateur simple comme à
+    l'administrateur (matrice RBAC §7.2 — sans require_admin).
+  end note
+end
+@enduml

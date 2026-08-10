@@ -10,5 +10,7 @@ tmp_*.py
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
 .env
 .venv/

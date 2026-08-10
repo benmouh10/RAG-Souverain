@@ -93,8 +93,12 @@ COPY --chown=raguser:raguser app/ /app/app/
 COPY --chown=raguser:raguser data/documents/ /app/data/documents/
 COPY --chown=raguser:raguser data/test_database.db /app/data/test_database.db
 
-# Copier et configurer l'entrypoint de souveraineté réseau
+# Copier les tests + fichiers de validation réseau (audit possible dans le conteneur)
+# Les tests s'exécutent en isolation réseau : docker exec rag-souverain python -m pytest
+COPY --chown=raguser:raguser tests/ /app/tests/
+COPY --chown=raguser:raguser pytest.ini /app/pytest.ini
 COPY --chown=raguser:raguser entrypoint.sh /app/entrypoint.sh
+COPY --chown=raguser:raguser docker-compose.yml /app/docker-compose.yml
 RUN chmod +x /app/entrypoint.sh
 
 # Exposer le port Streamlit

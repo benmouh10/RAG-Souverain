@@ -1,0 +1,60 @@
+@startuml sequence_chat
+' Diagramme de séquence — Chat RAG
+!theme plain
+actor Utilisateur
+participant "pages/chat.py" as Chat
+participant "RAGEngine\n(app/core/rag_engine.py)" as Engine
+participant "Retriever" as Retr
+participant "ChromaVectorStore" as VS
+participant "OllamaLLM" as LLM
+participant "QueryLogger" as QL
+participant "Database" as DB
+
+Utilisateur -> Chat: question en langage naturel
+Chat -> Chat: is_greeting(query) ?
+alt salutation courte (≤ 12 caractères)
+  Chat --> Utilisateur: réponse de bienvenue (sans recherche)
+else question réelle
+  Chat -> Chat: réécriture de suivi (and now ? / et ensuite ?) → requête autonome
+  Chat -> Engine: answer(question réécrite)
+  Engine -> Engine: détection fichier nommé → where={"source_file": ...}
+  Engine -> Retr: retrieve(q, top_k=4, min_score, where)
+  Retr -> Retr: HyDE (optionnel, désactivé par défaut)
+  Retr -> VS: search(q, top_k=top_k*2+2, where)
+  VS -> VS: embedding local de la requête
+  VS --> Retr: SearchResult[] (score cosinus normalisé)
+  Retr -> Retr: BM25 + fusion RRF (si hybride)
+  Retr -> Retr: min_score neutre (0.0) — tri par top_k + rerank
+  Retr -> Retr: rerank CrossEncoder hors-ligne (si snapshot local)
+  Retr --> Engine: top_k résultats
+  Engine -> LLM: generate(q, contexte_formaté, historique)
+  alt circuit breaker ouvert (M2)
+    LLM --> Engine: erreur dégradée (pas d'appel réseau)
+  else Ollama disponible
+    LLM -> LLM: build_prompt() + instructions anti-hallucination
+    LLM --> Engine: réponse générée
+  end
+  Engine --> Chat: (réponse, contextes)
+  Chat -> Chat: dedupe_sources(file|page|content)
+  Chat -> Chat: st.session_state["messages"] += (question, réponse, sources)
+  note right of Chat
+    Bridge session_state ↔ SQLite (C3) :
+    • session_state = état d'affichage de la page courante
+    • SQLite (Database.save_chat_message) = source de vérité
+      persistante (relue au rechargement de la session)
+  end note
+  Chat -> DB: save_chat_message(user_id, role, contenu, sources)
+  Chat --> Utilisateur: réponse avec citations + scores
+  Chat -> QL: log(question, latence, sources, modèle)
+  Chat -> QL: requête persistée dans query_logs (SQLite)
+  note right of Chat
+    La page Performance ne lit PAS session_state : elle recharge
+    query_logs via QueryLogger.get_recent()/get_stats() à chaque
+    navigation → voir sequence_performance.puml (C3).
+  end note
+  opt export PDF demandé (UC_Export)
+    Chat -> Chat: build_chat_pdf(messages, sources)
+    Chat --> Utilisateur: téléchargement PDF
+  end
+end
+@enduml

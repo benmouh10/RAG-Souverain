@@ -1,0 +1,34 @@
+@startuml activity_chat
+' Diagramme d'activités — Pipeline question → réponse
+!theme plain
+start
+:Recevoir la question;
+if (salutation courte ?) then (oui)
+  :Réponse de bienvenue (court-circuit);
+else (non)
+  :Expansion HyDE (optionnelle);
+  :Recherche vectorielle — embedding local + cosine;
+  if (recherche hybride activée ?) then (oui)
+    :BM25 + fusion RRF;
+  endif
+  :Filtre min_score neutre (0.0) — tri top_k + rerank;
+  if (rerank CrossEncoder actif ?) then (oui)
+    :Reranking top candidats;
+  endif
+  if (chunks pertinents trouvés ?) then (oui)
+    if (circuit breaker LLM ouvert ? (M2)) then (oui)
+      :Réponse dégradée — aucun appel réseau vers Ollama;
+    else (non)
+      :Construction du prompt RAG (contexte + historique);
+      :Génération LLM — Ollama / Mistral;
+    endif
+    :Dédoublonnage des sources (file|page|content);
+    :Enregistrement chat (session + SQLite);
+    :Affichage réponse + citations (fichier, page, score);
+  else (non)
+    :Réponse "information introuvable dans les documents";
+  endif
+  :Journalisation query_logs (latence, sources, modèle) — M4;
+endif
+stop
+@enduml

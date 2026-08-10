@@ -1,0 +1,48 @@
+@startuml activity_ingestion
+' Diagramme d'activités — Ingestion & indexation de documents
+!theme plain
+start
+:Upload (UI admin) ou détection (file watcher\nsur data/documents uniquement, C5);
+:Calcul du hash SHA-256;
+if (hash déjà indexé ?) then (oui)
+  :Retour (0, version existante) — aucun re-traitement;
+  stop
+else (non)
+endif
+:Extraction du texte;
+if (type de fichier ?) then (PDF natif)
+  :pdfplumber / PyMuPDF;
+elseif (PDF scanné)
+  :OCR Tesseract (fra);
+elseif (TXT / MD / CSV)
+  :lecture texte;
+else (SQLite)
+  :SQLParser — un chunk par enregistrement;
+endif
+if (contenu exploitable ?) then (non)
+  :Erreur "aucun contenu exploitable";
+  stop
+else (oui)
+endif
+if (chunks générés ?) then (non)
+  :Erreur "aucun chunk";
+  stop
+else (oui)
+endif
+:Découpage adaptatif;
+if (structure détectée ?) then (oui)
+  :chunks par sections;
+elseif (tableau ?)
+  :chunks tableaux;
+else (texte libre)
+  :chunks par fenêtre glissante (512 tokens, overlap 100);
+endif
+if (source = UI admin ?) then (oui)
+  :record_ingestion(filename, hash, len(chunks))\n— version globale incrémentée (C1/Mo4);
+else (file watcher)
+  :pas de versionnage — déduplication par hash (C5);
+endif
+:Embeddings locaux hors-ligne (dim 384);
+:Insertion ChromaDB — métadonnées assainies (dict→JSON, None→"");
+stop
+@enduml

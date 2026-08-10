@@ -1,0 +1,38 @@
+@startuml sequence_login
+' Diagramme de séquence — Connexion (RBAC)
+!theme plain
+actor Utilisateur
+participant "pages/auth.py\n(Login)" as Auth
+participant "session.py" as Session
+participant "Database" as DB
+
+Utilisateur -> Auth: saisit identifiant + mot de passe
+Auth -> DB: authenticate(username, password)
+DB -> DB: get_user_by_username()
+alt utilisateur inexistant
+  DB --> Auth: None
+  Auth --> Utilisateur: "Identifiants invalides"
+else utilisateur trouvé
+  DB -> DB: _verify_password(hash stocké, mot de passe)
+  alt hachage invalide
+    DB --> Auth: None
+    Auth --> Utilisateur: "Identifiants invalides"
+  else hachage valide
+    DB --> Auth: User(user_id, username, role)
+    Auth -> Session: sign_in(user_id, username, role)
+    Session -> Session: jeton de session + user_role
+    Auth --> Utilisateur: navigation selon rôle
+    alt role = admin
+      Session --> Utilisateur: 6 pages (Chat, Indexation, Eval, Performance, Paramètres, Users)
+    else role = user
+      Session --> Utilisateur: 2 pages (Chat, Indexed Files)
+    end
+  end
+end
+
+note over Session
+  M1 — défense en profondeur : chaque page sensible re-vérifie
+  le rôle via require_admin() (session), même si la navigation
+  est déjà filtrée par allowed_pages().
+end note
+@enduml

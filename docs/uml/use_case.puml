@@ -1,0 +1,61 @@
+@startuml use_case
+' Diagramme de cas d'utilisation — RAG Souverain
+!theme plain
+skinparam actorStyle awesome
+skinparam usecase {
+  BorderColor #0284C7
+  BackgroundColor #EFF6FF
+}
+left to right direction
+
+actor "Utilisateur" as User
+actor "Administrateur" as Admin
+Admin -|> User
+
+rectangle "Système RAG Souverain" {
+  usecase "S'authentifier" as UC_Auth
+  usecase "Vérifier le mot de passe (hash)" as UC_Verify
+  usecase "Poser une question (Chat RAG)" as UC_Chat
+  usecase "Détecter une salutation" as UC_Greeting
+  usecase "Rechercher le contexte pertinent" as UC_Retrieval
+  usecase "Générer la réponse (Ollama / Mistral)" as UC_Gen
+  usecase "Consulter les fichiers indexés" as UC_List
+  usecase "Exporter la conversation en PDF" as UC_Export
+  usecase "Indexer des fichiers" as UC_Index
+  usecase "Supprimer un fichier de l'index" as UC_Delete
+  usecase "Purger la base vectorielle" as UC_Purge
+  usecase "Gérer les paramètres système" as UC_Params
+  usecase "Gérer les utilisateurs" as UC_Users
+  usecase "Lancer l'évaluation Ragas" as UC_Eval
+  usecase "Consulter l'audit et les performances" as UC_Audit
+}
+
+User --> UC_Auth
+Admin --> UC_Auth
+User --> UC_Chat
+User --> UC_List
+User --> UC_Export
+Admin --> UC_Index
+Admin --> UC_Delete
+Admin --> UC_Purge
+Admin --> UC_Params
+Admin --> UC_Users
+Admin --> UC_Eval
+Admin --> UC_Audit
+
+UC_Auth ..> UC_Verify : <<include>>
+UC_Chat ..> UC_Retrieval : <<include>>
+UC_Chat ..> UC_Gen : <<include>>
+UC_Greeting ..> UC_Chat : <<extend>>
+note right of UC_Greeting
+  Convention UML : la relation <<extend>>
+  est une flèche pointillée dirigée de
+  l'extension (UC_Greeting) vers le cas
+  de base (UC_Chat). UC_Greeting insère
+  un comportement optionnel dans
+  UC_Chat : si l'entrée est une
+  salutation courte (≤ 12 caractères),
+  la recherche vectorielle est
+  court-circuitée.
+end note
+@enduml

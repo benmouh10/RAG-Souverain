@@ -1,0 +1,53 @@
+@startuml deployment
+' Diagramme de déploiement — Docker Compose + Ollama hôte
+!theme plain
+skinparam node {
+  BorderColor #334155
+  BackgroundColor #F1F5F9
+}
+skinparam database {
+  BorderColor #0F766E
+  BackgroundColor #F0FDFA
+}
+skinparam artifact {
+  BackgroundColor #FFFBEB
+}
+
+node "Hôte Docker" as Host {
+  node "Réseau isolé — rag_network (bridge)" as Net {
+    node "Conteneur : rag-app\nStreamlit :8501 + iptables (souveraineté)" as App {
+      artifact "app/streamlit_app.py" as A1
+      artifact "app/core/rag_engine.py" as A4
+      artifact "app/evaluation/eval_pipeline.py" as A2
+      artifact "entrypoint.sh (iptables OUTPUT DROP)" as A3
+      artifact "data/evaluation_report.csv" as A5
+    }
+    node "Conteneur : ingestion-watcher" as Watch {
+      artifact "app/ingestion/watcher.py" as W1
+    }
+  }
+
+  node "Hôte : Ollama (port 11434)" as Ollama {
+    artifact "mistral:latest (7B)" as M
+  }
+}
+
+database "Volume : ./data/chroma\n(ChromaDB persistante)" as VolChroma
+database "Volume : ./data/rag.db\n(SQLite : comptes + versions globales)" as VolDB
+database "Volume : ./data/documents\n(lecture seule)" as VolDocs
+
+App ..> Ollama : HTTP host.docker.internal:11434 (uniquement)
+App --> VolChroma
+App --> VolDB
+Watch --> VolDocs : surveillance continue (data/documents uniquement, C5)
+Watch --> VolChroma : indexation auto (hash-dedup, sans LLM)
+
+note bottom of App
+  Souveraineté réseau :
+  · iptables : OUTPUT DROP (hors loopback + Ollama)
+  · DNS forcé sur 127.0.0.1
+  · HF / embeddings en mode OFFLINE
+  · Le watcher (Watch) ne contacte PAS Ollama (Mo6) :
+    il ne fait que parser, chunker, embedder et indexer dans Chroma.
+end note
+@enduml

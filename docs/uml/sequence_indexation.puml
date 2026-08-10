@@ -1,0 +1,42 @@
+@startuml sequence_indexation
+' Diagramme de séquence — Indexation de fichiers (Admin)
+!theme plain
+actor Administrateur
+participant "pages/file_indexation.py" as Page
+participant "session.py\nrequire_admin()" as Session
+participant "RAGEngine\n(app/core/rag_engine.py)" as Engine
+participant "DocumentParser" as Parser
+participant "AdaptiveChunker" as Chunker
+participant "ChromaVectorStore" as VS
+participant "Database" as DB
+
+Administrateur -> Page: upload multi-fichiers + clic Indexer
+Page -> Session: require_admin() — garde serveur (M1)
+Session --> Page: accès autorisé (rôle admin)
+Page -> Engine: ingest_document(path, filename, data)
+Engine -> Engine: compute_file_hash(data)  (SHA-256)
+Engine -> DB: get_file_hash(filename) — version globale (C1/Mo4)
+DB --> Engine: hash de la dernière version (ou None)
+alt hash identique à la dernière version
+  Engine --> Page: (0, version existante) — aucun changement
+else contenu nouveau
+  Engine -> Parser: parse_file(path)
+  Parser -> Parser: PDF natif / OCR / TXT / MD / CSV
+  Parser --> Engine: ParsedDocument (pages)
+  alt page_count = 0
+    Engine --> Page: erreur "aucun contenu exploitable"
+  else
+    Engine -> Chunker: chunk_documents([document])
+    Chunker -> Chunker: sections / fenêtre glissante / tableau / SQL
+    Chunker --> Engine: list<TextChunk>
+    Engine -> DB: record_ingestion(filename, hash, len(chunks))
+    DB --> Engine: DocVersion (version globale incrémentée)
+    Engine -> Engine: chunk.version = version
+    Engine -> VS: add_chunks(chunks, batch=64)
+    VS -> VS: embeddings locaux + métadonnées assainies
+    VS --> Engine: nombre de chunks ajoutés
+    Engine --> Page: (added, version)
+  end
+end
+Page --> Administrateur: résultat par fichier (chunks, version, statut)
+@enduml
