@@ -22,6 +22,46 @@ DATA_DIR = PROJECT_ROOT / "data"
 SEPARATOR = "=" * 72
 
 @pytest.mark.integration
+def test_rag_end_to_end():
+    """Test d'intégration Retrieval + LLM local (Ollama).
+
+    Exclu du CI rapide (pytest.ini). Se skippe proprement si la collection
+    vectorielle est vide (exécuter d'abord ``test_pipeline_complet``) ou si
+    Ollama est indisponible. Valide qu'une question reçoit une réponse non
+    vide, avec le retriever (min_score faible pour tolérer un petit corpus).
+    """
+    chroma_path = os.getenv("CHROMA_PERSIST_DIR", str(DATA_DIR / "chroma"))
+    chroma_collection = os.getenv("CHROMA_COLLECTION", "rag_documents")
+    vector_store = ChromaVectorStore(
+        persist_directory=chroma_path,
+        collection_name=chroma_collection,
+    )
+
+    if vector_store.count() == 0:
+        pytest.skip("Collection vectorielle vide — exécuter d'abord tests/test_pipeline_complet.py")
+
+    retriever = Retriever(vector_store)
+    llm = OllamaLLM(model_name="mistral")
+
+    if not llm.health_check(timeout=5):
+        pytest.skip("Ollama indisponible (host.docker.internal:11434 ou localhost:11434)")
+
+    results = retriever.retrieve(
+        "Quel est le poste de Jean Dupont ?",
+        top_k=3,
+        min_score=0.2,
+    )
+    formatted_context = retriever.format_context(results)
+
+    response = llm.generate(
+        "Quel est le poste de Jean Dupont ?",
+        formatted_context,
+    )
+
+    assert response and response.strip(), "Le LLM a retourné une réponse vide."
+    assert "Ollama" not in response, f"Échec de génération : {response[:200]}"
+
+
 def main():
     print(SEPARATOR)
     print("=== TEST RAG COMPLET (Retrieval + Ollama LLM) ===")
