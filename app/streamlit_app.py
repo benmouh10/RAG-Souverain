@@ -79,7 +79,11 @@ def render_sidebar() -> None:
     # System health box
     try:
         rag = init_rag_engine()
-        ollama_ok = rag.ollama_available
+        ollama_ok = False
+        if getattr(rag, "llm", None) is not None:
+            ollama_ok = rag.llm.health_check()
+        else:
+            ollama_ok = bool(rag.ollama_available)
         chroma_count = get_chroma_count(rag)
     except Exception:
         ollama_ok = False
@@ -87,10 +91,11 @@ def render_sidebar() -> None:
 
     ollama_class = "status-badge status-green" if ollama_ok else "status-badge status-amber"
     chroma_class = "status-badge status-green" if chroma_count > 0 else "status-badge status-amber"
+    ollama_label = "Online" if ollama_ok else "Degraded"
     st.sidebar.markdown("<div class='sidebar-section-title'>System Health</div>", unsafe_allow_html=True)
     st.sidebar.markdown(
         f"<div class='sidebar-card sidebar-health'>"
-        f"<div class='row'><span>Ollama</span><span class='{ollama_class}'>Online</span></div>"
+        f"<div class='row'><span>Ollama</span><span class='{ollama_class}'>{ollama_label}</span></div>"
         f"<div class='row'><span>ChromaDB</span><span class='{chroma_class}'>Indexed</span></div>"
         f"<div class='row'><span>Indexed chunks</span><span class='chunk-count'>{chroma_count}</span></div>"
         f"</div>",

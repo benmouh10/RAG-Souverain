@@ -8,9 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from app.app_ui import _load_database
+from app.session import require_admin
 
 
 def render_users_page() -> None:
+    if not require_admin():
+        return
+
     Database = _load_database()
     db = Database()
 

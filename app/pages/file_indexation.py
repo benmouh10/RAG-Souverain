@@ -18,6 +18,7 @@ from app.app_ui import (
     init_rag_engine,
     reset_upload_widget_state,
 )
+from app.session import require_admin
 
 logger = logging.getLogger("rag_ui")
 
@@ -28,6 +29,9 @@ def _file_type_label(source_file: str) -> str:
 
 
 def render_file_indexation_page() -> None:
+    if not require_admin():
+        return
+
     rag = init_rag_engine()
 
     st.markdown("<div class='section-card'>", unsafe_allow_html=True)

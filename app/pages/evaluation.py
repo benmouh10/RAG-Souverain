@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from app.app_ui import _load_eval_helpers
+from app.session import require_admin
 
 logger = logging.getLogger("rag_ui")
 
@@ -47,6 +48,9 @@ def _run_evaluation_background(
 
 
 def render_evaluation_page() -> None:
+    if not require_admin():
+        return
+
     st.markdown("<div class='section-card'>", unsafe_allow_html=True)
     st.header("Evaluation & Audit")
     st.caption("Measure the fidelity and relevance of RAG-generated answers against your reference documents.")

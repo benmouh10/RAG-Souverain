@@ -6,9 +6,13 @@ import pandas as pd
 import streamlit as st
 
 from app.app_ui import _load_observability
+from app.session import require_admin
 
 
 def render_performance_page() -> None:
+    if not require_admin():
+        return
+
     QueryLogger = _load_observability()
     query_logger = QueryLogger()
 

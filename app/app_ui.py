@@ -22,59 +22,44 @@ if str(PROJECT_ROOT) not in sys.path:
 logger = logging.getLogger("rag_ui")
 
 if TYPE_CHECKING:
-    from app.evaluation.eval_pipeline import RAGEngine
+    from app.core.rag_engine import RAGEngine
 
 
 # ---------------------------------------------------------------------------
-# Lazy imports (fallback for out-of-package execution)
+# Lazy imports — imports différés au premier usage (démarrage UI plus léger).
+# M3 : namespace canonique unique `app.*`. Les anciens chemins "top-level"
+# (from evaluation.eval_pipeline import ...) ont été supprimés : ils n'étaient
+# atteignables qu'en exécution hors package et dupliquaient la logique de
+# résolution des modules.
 # ---------------------------------------------------------------------------
 def _load_rag_engine_class() -> Any:
-    try:
-        from app.evaluation.eval_pipeline import RAGEngine
-    except ModuleNotFoundError:
-        from evaluation.eval_pipeline import RAGEngine
+    from app.core.rag_engine import RAGEngine
     return RAGEngine
 
 
 def _load_eval_helpers() -> tuple[Any, Any]:
-    try:
-        from app.evaluation.eval_pipeline import export_results, run_evaluation
-    except ModuleNotFoundError:
-        from evaluation.eval_pipeline import export_results, run_evaluation
+    from app.evaluation.eval_pipeline import export_results, run_evaluation
     return export_results, run_evaluation
 
 
 def _load_llm_class() -> Any:
-    try:
-        from app.generation.llm import OllamaLLM
-    except ModuleNotFoundError:
-        from generation.llm import OllamaLLM
+    from app.generation.llm import OllamaLLM
     return OllamaLLM
 
 
 def _load_ingestion_helpers() -> tuple[Any, Any]:
-    try:
-        from app.ingestion.chunker import AdaptiveChunker
-        from app.ingestion.parser import DocumentParser
-    except ModuleNotFoundError:
-        from ingestion.chunker import AdaptiveChunker
-        from ingestion.parser import DocumentParser
+    from app.ingestion.chunker import AdaptiveChunker
+    from app.ingestion.parser import DocumentParser
     return AdaptiveChunker, DocumentParser
 
 
 def _load_database() -> Any:
-    try:
-        from app.database import Database
-    except ModuleNotFoundError:
-        from database import Database
+    from app.database import Database
     return Database
 
 
 def _load_observability() -> Any:
-    try:
-        from app.observability import QueryLogger
-    except ModuleNotFoundError:
-        from observability import QueryLogger
+    from app.observability import QueryLogger
     return QueryLogger
 
 
@@ -215,7 +200,7 @@ def export_chat_to_pdf(messages: list[dict[str, Any]], username: str) -> bytes:
                 pdf.cell(0, 4, f"    Source {i}: {src_file} (score: {score:.4f})", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(3)
 
-    return pdf.output()
+    return bytes(pdf.output())
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +217,6 @@ def init_rag_engine(force: bool = False, model_name: str | None = None) -> Any:
             kwargs["model_name"] = model_name
         elif st.session_state.get("llm_model"):
             kwargs["model_name"] = st.session_state["llm_model"]
-        if user_id is not None:
-            kwargs["user_id"] = user_id
         try:
             st.session_state[engine_key] = rag_engine_cls(**kwargs)
         except ConnectionError as e:

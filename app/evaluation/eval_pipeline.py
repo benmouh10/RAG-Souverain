@@ -53,34 +53,30 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # ---------------------------------------------------------------------------
 # Imports de notre code RAG
 # ---------------------------------------------------------------------------
-from app.indexing.vector_store import ChromaVectorStore
-from app.retrieval.retriever import Retriever
-from app.generation.llm import OllamaLLM
+# Le moteur RAG (RAGEngine) vit dans la couche cœur (app.core.rag_engine),
+# voir remaniement C2. Ce module d'évaluation n'en est plus qu'un consommateur.
+from app.core.rag_engine import (
+    CHROMA_COLLECTION,
+    CHROMA_PERSIST_DIR,
+    GENERATOR_MODEL,
+    OLLAMA_BASE_URL,
+    RAGEngine,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration (variables d'environnement pour Docker)
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-
-def _resolve_ollama_base_url() -> str:
-    from_env = os.getenv("OLLAMA_BASE_URL")
-    if from_env:
-        return from_env
-    if os.getenv("IN_DOCKER") == "1" or Path("/.dockerenv").exists():
-        return "http://host.docker.internal:11434"
-    return "http://localhost:11434"
-
-
-OLLAMA_BASE_URL = _resolve_ollama_base_url()
 EVALUATOR_MODEL = "mistral"  # Modèle utilisé comme juge RAGAS
-GENERATOR_MODEL = "mistral"  # Modèle utilisé pour générer les réponses
-CHROMA_PERSIST_DIR = Path(os.getenv("CHROMA_PERSIST_DIR", str(PROJECT_ROOT / "data" / "chroma")))
-CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "rag_documents")
-TOP_K = 6
-MIN_SCORE = 0.65
 REPORT_PATH = Path(os.getenv("EVALUATION_REPORT_PATH", str(PROJECT_ROOT / "data" / "evaluation_report.csv")))
 QUERY_TIMEOUT_SECONDS = int(os.getenv("EVALUATION_QUERY_TIMEOUT", "30"))  # per-question budget
+
+# M4 — Observabilité : la boucle d'évaluation alimente la même table query_logs
+# que le chat, afin que les analyses de performance couvrent l'ensemble du trafic.
+from app.observability import QueryLogger
+
+_QUERY_LOGGER = QueryLogger()
 
 
 def _run_with_timeout(fn: Callable[[], Any], timeout: float, default: Any = None) -> Any:
@@ -259,178 +255,9 @@ GOLD_DATASET: list[dict[str, str]] = [
 # ===========================================================================
 # 2. CLIENT RAG COMPLET
 # ===========================================================================
-
-class RAGEngine:
-    """
-    Moteur RAG complet qui enchaîne retrieval + génération.
-    Utilise les composants existants du projet.
-    """
-
-    def __init__(
-        self,
-        chroma_persist_dir: str | Path = CHROMA_PERSIST_DIR,
-        collection_name: str = CHROMA_COLLECTION,
-        model_name: str = GENERATOR_MODEL,
-        top_k: int = TOP_K,
-        min_score: float = MIN_SCORE,
-        user_id: int | None = None,
-    ):
-        self.top_k = top_k
-        self.min_score = min_score
-        self.model_name = model_name
-        self.user_id = user_id
-
-        # Global shared collection: all roles (admin & users) query the same
-        # knowledge base. No user-level collection scoping.
-        scoped_collection = collection_name
-
-        self.ollama_available = self._check_ollama()
-
-        # Initialisation du Vector Store
-        logger.info("Initialisation du Vector Store (persist_dir=%s, collection=%s)...",
-                     chroma_persist_dir, scoped_collection)
-        self.vector_store = ChromaVectorStore(
-            persist_directory=chroma_persist_dir,
-            collection_name=scoped_collection,
-        )
-        self.vector_store.initialize_collection()
-
-        # Initialisation du LLM de génération (si Ollama disponible)
-        if self.ollama_available:
-            self.llm = OllamaLLM(model_name=model_name)
-        else:
-            self.llm = None
-
-        # Initialisation du Retriever
-        self.retriever = Retriever(vector_store=self.vector_store, llm=self.llm)
-
-        # DB pour versioning (si user_id fourni)
-        self._db = None
-        if user_id is not None:
-            from app.database import Database
-            self._db = Database()
-
-        logger.info("RAGEngine prêt. Collection: %d docs, Modèle: %s, Ollama: %s",
-                     self.vector_store.count(), model_name,
-                     "✓" if self.ollama_available else "✗")
-
-    def _check_ollama(self) -> bool:
-        """Vérifie si Ollama est accessible."""
-        import requests
-        try:
-            resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=15)
-            return resp.status_code == 200
-        except Exception:
-            return False
-
-    def ingest_sql(self, db_path: str | Path) -> int:
-        """Parse une base SQLite et indexe tous les enregistrements."""
-        from app.ingestion.parser import SQLParser
-        from app.ingestion.chunker import AdaptiveChunker
-
-        parser = SQLParser(db_path)
-        sql_doc = parser.to_parsed_documents()
-        parser.close()
-
-        chunker = AdaptiveChunker()
-        chunks = chunker.chunk_documents([sql_doc])
-
-        added = self.vector_store.add_chunks(chunks)
-        logger.info("SQL ingéré : %d chunks depuis %s", added, db_path)
-        return added
-
-    def ingest_document(
-        self,
-        file_path: str | Path,
-        filename: str,
-        file_data: bytes,
-    ) -> tuple[int, int]:
-        """Indexe un document avec suivi de version.
-
-        Returns:
-            (chunks_added, version_number)
-        """
-        from app.ingestion.parser import DocumentParser
-        from app.ingestion.chunker import AdaptiveChunker
-        from app.database import compute_file_hash
-
-        file_hash = compute_file_hash(file_data)
-        version = 1
-
-        if self._db is not None and self.user_id is not None:
-            existing_hash = self._db.get_file_hash(self.user_id, filename)
-            if existing_hash == file_hash:
-                latest = self._db.get_latest_version(self.user_id, filename)
-                return 0, latest.version if latest else 1
-
-            doc_version = self._db.record_ingestion(self.user_id, filename, file_hash, 0)
-            version = doc_version.version
-
-        parser = DocumentParser()
-        parsed_documents = parser.parse_file(file_path)
-
-        if parsed_documents.page_count == 0:
-            raise ValueError(f"Le fichier '{filename}' ne contient aucun contenu exploitable.")
-
-        chunker = AdaptiveChunker()
-        chunks = chunker.chunk_documents([parsed_documents])
-
-        if not chunks:
-            raise ValueError(f"Aucun chunk généré depuis '{filename}'.")
-
-        for chunk in chunks:
-            chunk.version = version
-
-        added = self.vector_store.add_chunks(chunks)
-        self.vector_store.initialize_collection()
-
-        if self._db is not None and self.user_id is not None:
-            self._db.record_ingestion.__func__  # ensure connected
-            with self._db._connect() as conn:
-                conn.execute(
-                    "UPDATE doc_versions SET chunk_count = ? WHERE user_id = ? AND filename = ? AND version = ?",
-                    (added, self.user_id, filename, version),
-                )
-                conn.commit()
-
-        logger.info("Document ingéré : %d chunks, version %d, fichier=%s", added, version, filename)
-        return added, version
-
-    def answer(self, question: str) -> tuple[str, list[dict[str, Any]]]:
-        """
-        Répond à une question en passant par le pipeline RAG complet.
-
-        Returns:
-            (reponse_generee, contextes_recuperes)
-        """
-        # 1. Retrieval
-        results = self.retriever.retrieve(
-            question,
-            top_k=self.top_k,
-            min_score=self.min_score,
-        )
-
-        # 2. Formatage du contexte
-        formatted_context = self.retriever.format_context(results)
-
-        # 3. Génération de la réponse (si Ollama disponible)
-        if self.llm:
-            response = self.llm.generate(question, formatted_context)
-        else:
-            response = "[LLM non disponible - Ollama requis pour la génération]"
-
-        # 4. Structuration des contextes pour Ragas
-        contexts = [
-            {
-                "content": r.content,
-                "score": r.score,
-                "source": r.metadata.get("source_file", "inconnu"),
-                "page": r.metadata.get("page_number", -1),
-            }
-            for r in results
-        ]
-
-        return response, contexts
+# La classe RAGEngine a été déplacée dans app.core.rag_engine (remaniement C2) :
+#   from app.core.rag_engine import RAGEngine
+# Ce module ne conserve que l'évaluation RAGAS et ses helpers.
 
 
 # ===========================================================================
@@ -584,6 +411,22 @@ def run_evaluation(
             result.response = response
             result.contexts = contexts
             result.latency_ms = (time.time() - start_time) * 1000
+
+            # M4 — Log la requête dans query_logs (même observabilité que le chat)
+            top1_score = contexts[0]["score"] if contexts else 0.0
+            mean_score = (
+                sum(c["score"] for c in contexts) / len(contexts) if contexts else 0.0
+            )
+            _QUERY_LOGGER.log(
+                question=question,
+                top1_score=top1_score,
+                mean_score=mean_score,
+                num_chunks=len(contexts),
+                llm_latency_ms=result.latency_ms,
+                total_latency_ms=result.latency_ms,
+                model_used=GENERATOR_MODEL,
+                source_files=[c["source"] for c in contexts],
+            )
 
             logger.info("  → %d contextes, %.0f ms", len(contexts), result.latency_ms)
 

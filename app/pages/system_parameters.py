@@ -5,9 +5,13 @@ from __future__ import annotations
 import streamlit as st
 
 from app.app_ui import init_rag_engine
+from app.session import require_admin
 
 
 def render_system_parameters_page() -> None:
+    if not require_admin():
+        return
+
     rag = init_rag_engine()
 
     st.markdown("<div class='section-card'>", unsafe_allow_html=True)
