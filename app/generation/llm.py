@@ -9,6 +9,7 @@ et la memoire de conversation multi-tours.
 import json
 import logging
 import os
+import time
 import requests
 from typing import Any, Iterator
 
@@ -20,6 +21,11 @@ DEFAULT_TEMPERATURE = 0.1
 TIMEOUT_SECONDS = 120
 CONVERSATION_WINDOW = int(os.getenv("CONVERSATION_WINDOW", "3"))
 USE_STRUCTURED_OUTPUT = os.getenv("USE_STRUCTURED_OUTPUT", "false").lower() in ("true", "1", "yes")
+
+# M2 — Health check & circuit breaker
+HEALTH_CHECK_TIMEOUT = 10.0
+CIRCUIT_BREAKER_FAILURES = 3      # échecs consécutifs avant ouverture
+CIRCUIT_BREAKER_COOLDOWN = 30.0   # durée d'ouverture (secondes)
 
 SYSTEM_PROMPT = """Tu es un assistant d'entreprise precis et utile. Tu reponds en te basant sur les extraits de documents fournis ci-dessous.
 
@@ -67,6 +73,51 @@ class OllamaLLM:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
+
+        # M2 — état de santé observé (None = jamais vérifié)
+        self.last_health: bool | None = None
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+
+    # -- M2 : health check ---------------------------------------------------
+
+    def health_check(self, timeout: float = HEALTH_CHECK_TIMEOUT) -> bool:
+        """Vérifie la disponibilité d'Ollama (GET /api/tags).
+
+        Mets à jour ``last_health`` et gère le circuit breaker : après
+        ``CIRCUIT_BREAKER_FAILURES`` échecs consécutifs, le circuit est ouvert
+        pendant ``CIRCUIT_BREAKER_COOLDOWN`` secondes ; les générations sont
+        alors court-circuitées au lieu d'attendre un timeout réseau.
+        """
+        try:
+            resp = requests.get(f"{self.base_url}/api/tags", timeout=timeout)
+            ok = resp.status_code == 200
+        except requests.RequestException:
+            ok = False
+
+        self.last_health = ok
+        if ok:
+            self._consecutive_failures = 0
+            self._circuit_open_until = 0.0
+        else:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= CIRCUIT_BREAKER_FAILURES:
+                self._circuit_open_until = time.time() + CIRCUIT_BREAKER_COOLDOWN
+                logger.error(
+                    "Circuit breaker ouvert (%d échecs consécutifs) pour %.0fs",
+                    self._consecutive_failures, CIRCUIT_BREAKER_COOLDOWN,
+                )
+        return ok
+
+    def _register_failure(self) -> None:
+        """Enregistre un échec d'appel et déclenche éventuellement le breaker."""
+        self.health_check(timeout=HEALTH_CHECK_TIMEOUT)
+
+    @property
+    def circuit_open(self) -> bool:
+        return time.time() < self._circuit_open_until
+
+    # ------------------------------------------------------------------------
 
     def build_prompt(
         self,
@@ -119,6 +170,13 @@ class OllamaLLM:
 
         logger.info("Envoi de la requete au modele %s (temp=%.2f) sur %s", self.model_name, self.temperature, url)
 
+        if self.circuit_open:
+            msg = ("Erreur : Ollama est actuellement indisponible (trop d'échecs récents). "
+                   "Réessayez dans quelques instants.")
+            logger.error(msg)
+            yield msg
+            return
+
         try:
             with requests.post(url, json=payload, stream=True, timeout=TIMEOUT_SECONDS) as response:
                 response.raise_for_status()
@@ -128,15 +186,20 @@ class OllamaLLM:
                         chunk = json.loads(line)
                         if "message" in chunk and "content" in chunk["message"]:
                             yield chunk["message"]["content"]
-                            
+
+            self.health_check(timeout=HEALTH_CHECK_TIMEOUT)
+
         except requests.exceptions.ConnectionError as e:
             logger.error("Erreur de connexion a Ollama : %s", e)
+            self._register_failure()
             yield f"Erreur : Impossible de se connecter a Ollama sur {self.base_url}. Le service est-il demarre ?"
         except requests.exceptions.Timeout as e:
             logger.error("Timeout de la requete Ollama : %s", e)
+            self._register_failure()
             yield "Erreur : La requete vers le LLM a expire."
         except requests.exceptions.RequestException as e:
             logger.error("Erreur lors de la requete Ollama : %s", e)
+            self._register_failure()
             yield f"Erreur de communication avec le LLM : {e}"
 
     def generate(

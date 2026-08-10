@@ -1,8 +1,32 @@
 """
 Automatic file watcher for continuous ingestion.
 
-Monitors /data/documents/ and triggers ingestion on new/modified files.
-Tracks indexed file hashes in SQLite to avoid re-indexing unchanged files.
+Scope (C5)
+----------
+Le watcher surveille **uniquement** ``data/documents/`` (non récursif) —
+périmètre volontairement restreint, conformément à la conception : seuls les
+fichiers déposés dans ce répertoire partagé sont indexés automatiquement.
+Le dossier ``data/documents`` est monté en lecture seule côté conteneur
+(docker-compose), ce qui garantit qu'aucune écriture concurrente ne provient
+des autres services.
+
+Sécurité des événements ``on_modified``
+---------------------------------------
+``on_modified`` est sans danger car :
+1. chaque événement est seulement **planifié** (debounce ``DEBOUNCE_SECONDS``) ;
+2. ``process_pending`` revérifie l'existence du fichier avant ingestion ;
+3. ``_is_indexed`` compare le hash SHA-256 courant : si un fichier est modifié
+   en cours d'écriture (copie partielle, ``.tmp``…), l'ancienne version reste
+   en place jusqu'à l'ingestion complète de la nouvelle, et les fichiers sans
+   modification de contenu ne sont jamais ré-indexés ;
+4. les fichiers temporaires/hiddens (``.*``, ``~*``, ``*.swp``…) sont ignorés.
+
+Versionnage global (C1/Mo4)
+---------------------------
+Le watcher indexe des chunks **sans** versionnage (pas de colonne ``user_id``,
+pas de gestion de version) : il utilise le hash de fichier pour détecter les
+changements. Le versionnage versionné (doc_versions) concerne l'ingestion
+via l'interface administrateur (``RAGEngine.ingest_document``).
 """
 
 from __future__ import annotations
@@ -21,7 +45,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 WATCH_DIR = DATA_DIR / "documents"
 HASH_DB_PATH = DATA_DIR / "indexed_files.db"
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
-IGNORED_PATTERNS = {"*.tmp", "~*", ".DS_Store", "*.swp", "*.swo"}
+IGNORED_PATTERNS = {"*~", "~*", ".*", ".DS_Store", "*.swp", "*.swo"}
 
 # Wait time after file modification before ingesting (debounce)
 DEBOUNCE_SECONDS = 2.0
@@ -190,11 +214,14 @@ class WatcherEventHandler:
         self._schedule_ingest(Path(event.src_path))
 
     def on_modified(self, event):
+        # Sûr : simple planification + debounce + contrôle du hash (voir docstring C5).
         if event.is_directory:
             return
         self._schedule_ingest(Path(event.src_path))
 
     def _schedule_ingest(self, file_path: Path) -> None:
+        if not file_path.is_file():
+            return
         if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             return
         if _should_ignore(file_path):

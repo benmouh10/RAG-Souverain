@@ -85,6 +85,22 @@ def is_admin() -> bool:
     return get_role() == "admin"
 
 
+def require_admin() -> bool:
+    """Garde serveur (M1) : vérifie le rôle administrateur côté session.
+
+    Chaque page/action sensible (indexation, suppression, purge, paramètres,
+    gestion des utilisateurs, évaluation) doit ré-appeler cette garde, en plus
+    du filtrage de navigation, afin de ne jamais exposer une action
+    administrative si la session n'est pas authentifiée comme admin.
+    """
+    if not is_admin():
+        import streamlit as st
+
+        st.error("Accès refusé — privilèges administrateur requis.")
+        return False
+    return True
+
+
 def allowed_pages() -> list[str]:
     return ADMIN_PAGES if is_admin() else USER_PAGES
 

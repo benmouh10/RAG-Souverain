@@ -239,14 +239,35 @@ class ChromaVectorStore:
         top_k: int = 5,
         max_version: int | None = None,
     ) -> list[SearchResult]:
-        """Recherche uniquement les chunks de la dernière version indexée.
+        """Recherche uniquement les chunks de la **dernière version indexée**.
 
-        Si max_version est fourni, filtre les chunks dont version <= max_version.
+        Correction C4 : la sémantique historique ``{"version": {"$lte": max_version}}``
+        était incorrecte — elle retrouvait *toutes* les versions ≤ seuil, mélangeant
+        les chunks obsolètes et courants d'un même fichier. La sémantique attendue
+        est une **égalité** sur la version la plus récente.
+
+        - Si ``max_version`` est fourni, filtre sur ``version == max_version``.
+        - Sinon, détermine la version maximale présente dans la collection
+          (via ``get_latest_version``) et filtre sur celle-ci.
+
+        Note : les chunks sans métadonnée ``version`` (indexés sans versionnage,
+        ex. ingests SQL ou uploads directs) sont ignorés ici ; utiliser
+        ``search`` pour une recherche sans contrainte de version.
         """
-        where_filter: dict[str, Any] | None = None
-        if max_version is not None:
-            where_filter = {"version": {"$lte": max_version}}
+        target_version = max_version
+        if target_version is None:
+            target_version = self.get_latest_version_all()
+        if target_version is None:
+            logger.info("search_latest : aucune version indexée — aucun résultat.")
+            return []
+        where_filter = {"version": target_version}
         return self.search(query, top_k=top_k, where=where_filter)
+
+    def get_latest_version_all(self) -> int | None:
+        """Version maximale présente dans la collection (None si vide)."""
+        all_data = self.collection.get(include=["metadatas"])
+        versions = [m.get("version", 0) for m in all_data["metadatas"]]
+        return max(versions) if versions else None
 
     def get_latest_version(self, filename: str) -> int:
         """Retourne le numéro de version le plus élevé pour un fichier donné."""
@@ -260,10 +281,14 @@ class ChromaVectorStore:
         return max_ver
 
     def count_by_version(self, filename: str, version: int) -> int:
-        """Compte les chunks pour un fichier et une version donnés."""
+        """Compte les chunks pour un fichier et une version donnés.
+
+        `collection.get(where=...)` n'accepte pas un dict multi-clés (ce serait
+        interprété comme un opérateur) : on exprime la conjonction via ``$and``.
+        """
         all_data = self.collection.get(
             include=["metadatas"],
-            where={"source_file": filename, "version": version},
+            where={"$and": [{"source_file": filename}, {"version": version}]},
         )
         return len(all_data["ids"])
 
@@ -294,6 +319,11 @@ class ChromaVectorStore:
 
     def count(self) -> int:
         return self.collection.count()
+
+    def get_source_files(self) -> set[str]:
+        """Ensemble des noms de fichiers distincts indexés dans la collection."""
+        metadatas = self.collection.get(include=["metadatas"]).get("metadatas", [])
+        return {_safe_meta(m).get("source_file", "unknown") for m in metadatas}
 
     def get_all_documents(self) -> list[dict[str, Any]]:
         """Return all stored documents with their IDs, texts, and metadata.

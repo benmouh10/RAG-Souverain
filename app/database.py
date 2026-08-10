@@ -97,12 +97,12 @@ class User:
 class DocVersion:
     """Version d'un document indexé, pour le versionnage des fichiers.
 
-    Un même fichier ré-indexé incrémente ``version`` ; ``chunk_count``
-    permet de connaître le nombre de chunks associés à cette version.
+    Le versionnage est **global** (par ``filename``), partagé entre tous les
+    administrateurs : un même fichier ré-indexé incrémente ``version`` ;
+    ``chunk_count`` permet de connaître le nombre de chunks associés.
     """
 
     doc_id: int
-    user_id: int
     filename: str
     file_hash: str
     version: int
@@ -136,13 +136,11 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS doc_versions (
                     doc_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id     INTEGER NOT NULL,
                     filename    TEXT NOT NULL,
                     file_hash   TEXT NOT NULL,
                     version     INTEGER NOT NULL DEFAULT 1,
                     chunk_count INTEGER NOT NULL DEFAULT 0,
-                    indexed_at  REAL NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                    indexed_at  REAL NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -191,6 +189,31 @@ class Database:
                         "UPDATE chat_history SET conversation_id = ? WHERE user_id = ? AND conversation_id = 0",
                         (conv_id, row["user_id"]),
                     )
+                conn.commit()
+
+            # Migration C1/Mo4: global document versioning (drop per-user key).
+            # Rebuild doc_versions without the user_id column (global by filename).
+            doc_versions_cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(doc_versions)").fetchall()
+            }
+            if "user_id" in doc_versions_cols:
+                conn.executescript(
+                    """
+                    CREATE TABLE doc_versions_new (
+                        doc_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                        filename    TEXT NOT NULL,
+                        file_hash   TEXT NOT NULL,
+                        version     INTEGER NOT NULL DEFAULT 1,
+                        chunk_count INTEGER NOT NULL DEFAULT 0,
+                        indexed_at  REAL NOT NULL
+                    );
+                    INSERT INTO doc_versions_new (doc_id, filename, file_hash, version, chunk_count, indexed_at)
+                        SELECT doc_id, filename, file_hash, version, chunk_count, indexed_at FROM doc_versions;
+                    DROP TABLE doc_versions;
+                    ALTER TABLE doc_versions_new RENAME TO doc_versions;
+                    """
+                )
                 conn.commit()
 
         if self.get_user_by_username("admin") is None:
@@ -267,25 +290,22 @@ class Database:
 
     # ── Document versioning ────────────────────────────────────────────────
 
-    def record_ingestion(
-        self, user_id: int, filename: str, file_hash: str, chunk_count: int
-    ) -> DocVersion:
+    def record_ingestion(self, filename: str, file_hash: str, chunk_count: int) -> DocVersion:
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT version FROM doc_versions WHERE user_id = ? AND filename = ? ORDER BY version DESC LIMIT 1",
-                (user_id, filename),
+                "SELECT version FROM doc_versions WHERE filename = ? ORDER BY version DESC LIMIT 1",
+                (filename,),
             ).fetchone()
 
             new_version = (existing["version"] + 1) if existing else 1
             now = time.time()
             cursor = conn.execute(
-                "INSERT INTO doc_versions (user_id, filename, file_hash, version, chunk_count, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, filename, file_hash, new_version, chunk_count, now),
+                "INSERT INTO doc_versions (filename, file_hash, version, chunk_count, indexed_at) VALUES (?, ?, ?, ?, ?)",
+                (filename, file_hash, new_version, chunk_count, now),
             )
             conn.commit()
             return DocVersion(
                 doc_id=cursor.lastrowid,
-                user_id=user_id,
                 filename=filename,
                 file_hash=file_hash,
                 version=new_version,
@@ -293,44 +313,42 @@ class Database:
                 indexed_at=now,
             )
 
-    def get_latest_version(self, user_id: int, filename: str) -> DocVersion | None:
+    def get_latest_version(self, filename: str) -> DocVersion | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM doc_versions WHERE user_id = ? AND filename = ? ORDER BY version DESC LIMIT 1",
-                (user_id, filename),
+                "SELECT * FROM doc_versions WHERE filename = ? ORDER BY version DESC LIMIT 1",
+                (filename,),
             ).fetchone()
         if row is None:
             return None
         return DocVersion(
-            doc_id=row["doc_id"], user_id=row["user_id"], filename=row["filename"],
+            doc_id=row["doc_id"], filename=row["filename"],
             file_hash=row["file_hash"], version=row["version"],
             chunk_count=row["chunk_count"], indexed_at=row["indexed_at"],
         )
 
-    def get_file_hash(self, user_id: int, filename: str) -> str | None:
-        v = self.get_latest_version(user_id, filename)
+    def get_file_hash(self, filename: str) -> str | None:
+        v = self.get_latest_version(filename)
         return v.file_hash if v else None
 
-    def list_documents(self, user_id: int) -> list[DocVersion]:
+    def list_documents(self) -> list[DocVersion]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM doc_versions WHERE user_id = ? ORDER BY indexed_at DESC",
-                (user_id,),
+                "SELECT * FROM doc_versions ORDER BY indexed_at DESC",
             ).fetchall()
         return [
             DocVersion(
-                doc_id=r["doc_id"], user_id=r["user_id"], filename=r["filename"],
+                doc_id=r["doc_id"], filename=r["filename"],
                 file_hash=r["file_hash"], version=r["version"],
                 chunk_count=r["chunk_count"], indexed_at=r["indexed_at"],
             )
             for r in rows
         ]
 
-    def get_total_chunks(self, user_id: int) -> int:
+    def get_total_chunks(self) -> int:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COALESCE(SUM(chunk_count), 0) as total FROM doc_versions WHERE user_id = ?",
-                (user_id,),
+                "SELECT COALESCE(SUM(chunk_count), 0) as total FROM doc_versions",
             ).fetchone()
         return row["total"] if row else 0
 
