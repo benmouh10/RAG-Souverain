@@ -27,6 +27,7 @@ services:
       - ./data/chroma:/app/data/chroma
       - ./data/rag.db:/app/data/rag.db
       - ./data/documents:/app/data/documents:ro
+      - ./data/evaluation_report.csv:/app/data/evaluation_report.csv
 
     # ── Accès à Ollama sur la machine hôte ──
     # host.docker.internal pointe vers l'hôte Windows/Mac/Linux
