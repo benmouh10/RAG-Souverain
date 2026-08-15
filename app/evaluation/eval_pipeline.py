@@ -268,7 +268,16 @@ def setup_ragas_evaluator():
     """
     Configure Ragas pour utiliser Ollama comme LLM de notation (Evaluator/Judge).
     Retourne les métriques ou None si Ollama n'est pas disponible.
+
+    Mode retrieval-only : poser ``EVALUATION_RETRIEVAL_ONLY=1`` pour collecter
+    uniquement les réponses + contextes (rapide, sans dépendance Ragas) — utile
+    quand ragas/langchain sont incompatibles ou pour un test démonstratif.
     """
+    if os.getenv("EVALUATION_RETRIEVAL_ONLY", "0") == "1":
+        logger.info("Mode retrieval-only activé (EVALUATION_RETRIEVAL_ONLY=1) : "
+                    "aucune métrique Ragas ne sera calculée.")
+        return None
+
     # Vérifier qu'Ollama est accessible
     import requests
     try:
@@ -280,16 +289,27 @@ def setup_ragas_evaluator():
         logger.warning("Ollama non disponible: %s", e)
         return None
 
-    from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_openai import ChatOpenAI
-    from ragas.embeddings import LangchainEmbeddingsWrapper
-    from ragas.llms import LangchainLLMWrapper
-    from ragas.metrics import (
-        faithfulness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-    )
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings
+        from langchain_openai import ChatOpenAI
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import (
+            faithfulness,
+            answer_relevancy,
+            context_precision,
+            context_recall,
+        )
+    except ImportError as exc:
+        # Ex. ragas 0.4.x avec langchain v1 : l'import échoue (module
+        # langchain_community.chat_models.vertexai supprimé). L'évaluation
+        # dégrade proprement en mode retrieval-only plutôt que de planter.
+        logger.warning(
+            "RAGAS indisponible (dépendances incompatibles) : %s. "
+            "Seules les données de retrieval seront collectées.",
+            exc,
+        )
+        return None
 
     # Client OpenAI-compatible pointant sur l'URL locale d'Ollama
     langchain_llm = ChatOpenAI(
