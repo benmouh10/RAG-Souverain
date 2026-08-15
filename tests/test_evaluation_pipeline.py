@@ -10,7 +10,7 @@ Exécution (Ollama + modèle d'embeddings + collection ChromaDB requis) :
     EVALUATION_LIMIT=5 python -m pytest tests/test_evaluation_pipeline.py -m integration
 
 La variable d'environnement ``EVALUATION_LIMIT`` borne le nombre de questions
-traitées (défaut : 5) pour garder la boucle démonstrative et rapide.
+traitées (défaut : l'intégralité du dataset doré, soit 30 questions).
 """
 
 from __future__ import annotations
@@ -118,12 +118,12 @@ def test_evaluation_roundtrip(monkeypatch):
     import pandas as pd
     from pathlib import Path
 
-    limit = int(os.getenv("EVALUATION_LIMIT", "5"))
+    limit = int(os.getenv("EVALUATION_LIMIT", str(len(GOLD_DATASET))))
     limit = max(1, min(limit, len(GOLD_DATASET)))
     subset = GOLD_DATASET[:limit]
     monkeypatch.setattr("app.evaluation.eval_pipeline.GOLD_DATASET", subset)
 
-    results = run_evaluation(timeout_seconds=60)
+    results = run_evaluation(timeout_seconds=120)
     export_results(results)
 
     report = Path(REPORT_PATH)
