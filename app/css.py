@@ -598,6 +598,43 @@ div[data-baseweb="input"] > div:last-child {
   border-bottom: 1px solid #E2E8F0;
   margin-bottom: 6px;
 }
+/* ==========================================================================
+   Sidebar Conversation List (Gemini style & Compact Spacing)
+   ========================================================================== */
+[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stVerticalBlock"] {
+  gap: 0.25rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="element-container"] {
+  margin-bottom: 2px !important;
+}
+.conv-item-btn [data-testid="stButton"] > button {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  background: #F1F5F9;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 10px !important;
+  margin: 0 !important;
+}
+.conv-item-btn [data-testid="stButton"] > button:hover {
+  background: #E2E8F0;
+  color: #0F172A;
+}
+.conv-item-active [data-testid="stButton"] > button {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  background: #E0F2FE !important;
+  color: #0284C7 !important;
+  font-weight: 700 !important;
+  border: 1px solid #BAE6FD !important;
+  padding: 6px 10px !important;
+  margin: 0 !important;
+}
 </style>
 """
 

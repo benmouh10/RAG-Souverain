@@ -82,7 +82,7 @@ def render_evaluation_page() -> None:
                 agg = df[metrics].apply(pd.to_numeric, errors="coerce").mean()
                 cols = st.columns(len(agg))
                 for col, (key, value) in zip(cols, agg.items()):
-                    metric_value = f"{(value * 100):.1f}%" if pd.notna(value) else "N/A"
+                    metric_value = f"{value:.2f}" if pd.notna(value) else "N/A"
                     col.metric(key.replace("_", " ").title(), metric_value)
 
             with st.expander("Show detailed report", expanded=False):

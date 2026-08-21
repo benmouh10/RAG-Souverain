@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import pickle
 import re
+from pathlib import Path
 from typing import Any
 
 from app.indexing.vector_store import ChromaVectorStore, SearchResult, _safe_meta
@@ -65,11 +67,40 @@ _bm25_docs: list[dict[str, Any]] = []
 _bm25_collection_count = 0
 USE_HYBRID = os.getenv("USE_HYBRID_SEARCH", "true").lower() in ("true", "1", "yes")
 USE_HYDE = os.getenv("USE_HYDE", "false").lower() in ("true", "1", "yes")
+_BM25_CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "bm25_cache.pkl"
 
 
 def _tokenize(text: str) -> list[str]:
     """Simple whitespace + lowercase tokenizer for BM25."""
     return re.findall(r"\w+", text.lower())
+
+
+def _save_bm25_cache(index: Any, docs: list[dict[str, Any]], count: int) -> None:
+    try:
+        _BM25_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_BM25_CACHE_PATH, "wb") as f:
+            pickle.dump({"index": index, "docs": docs, "count": count}, f)
+        logger.info("Saved BM25 index cache to %s (%d docs)", _BM25_CACHE_PATH, count)
+    except Exception as e:
+        logger.warning("Failed to save BM25 cache: %s", e)
+
+
+def _load_bm25_cache(expected_count: int) -> bool:
+    global _bm25_index, _bm25_docs, _bm25_collection_count
+    if not _BM25_CACHE_PATH.exists():
+        return False
+    try:
+        with open(_BM25_CACHE_PATH, "rb") as f:
+            data = pickle.load(f)
+        if data.get("count") == expected_count and data.get("index") is not None:
+            _bm25_index = data["index"]
+            _bm25_docs = data.get("docs", [])
+            _bm25_collection_count = data["count"]
+            logger.info("Loaded BM25 index from cache (%d docs)", expected_count)
+            return True
+    except Exception as e:
+        logger.warning("Failed to load BM25 cache: %s", e)
+    return False
 
 
 def _build_bm25_index(vector_store: ChromaVectorStore):
@@ -100,15 +131,20 @@ def _build_bm25_index(vector_store: ChromaVectorStore):
 
     _bm25_index = BM25Okapi(corpus_tokens)
     _bm25_docs = all_docs
-    _bm25_collection_count = vector_store.count()
+    _bm25_collection_count = len(all_docs)
     logger.info("BM25 index built: %d documents.", len(all_docs))
+    _save_bm25_cache(_bm25_index, _bm25_docs, _bm25_collection_count)
 
 
 def _ensure_bm25_index(vector_store: ChromaVectorStore):
-    """Rebuild BM25 index if collection has changed."""
+    """Rebuild BM25 index if collection has changed, loading disk cache if available."""
+    global _bm25_index, _bm25_collection_count
     current_count = vector_store.count()
-    if _bm25_index is None or current_count != _bm25_collection_count:
-        _build_bm25_index(vector_store)
+    if _bm25_index is not None and current_count == _bm25_collection_count:
+        return
+    if _load_bm25_cache(current_count):
+        return
+    _build_bm25_index(vector_store)
 
 
 def _rrf_score(rank: int, k: int = 60) -> float:
@@ -337,9 +373,11 @@ class Retriever:
         for i, result in enumerate(results, start=1):
             source = result.metadata.get("source_file", "Source inconnue")
             page = result.metadata.get("page_number")
+            sec = result.metadata.get("section_title")
             
             page_info = f" - page {page}" if page and page != -1 else ""
-            header = f"[Extrait {i} - {source}{page_info}]"
+            sec_info = f" | Section: {sec}" if sec else ""
+            header = f"[Extrait {i} - {source}{page_info}{sec_info}]"
             
             context_parts.append(f"{header}\n{result.content.strip()}")
 

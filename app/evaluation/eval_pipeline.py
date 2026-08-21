@@ -71,6 +71,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 EVALUATOR_MODEL = "mistral"  # Modèle utilisé comme juge RAGAS
 REPORT_PATH = Path(os.getenv("EVALUATION_REPORT_PATH", str(PROJECT_ROOT / "data" / "evaluation_report.csv")))
 QUERY_TIMEOUT_SECONDS = int(os.getenv("EVALUATION_QUERY_TIMEOUT", "30"))  # per-question budget
+RAGAS_TIMEOUT_SECONDS = int(os.getenv("EVALUATION_RAGAS_TIMEOUT", "300"))  # budget des métriques Ragas
+# Timeout interne à Ragas (run_config) : nettement au-dessus du budget pipeline
+# pour ne pas masquer les erreurs réelles — Ollama est lent (génération CPU).
+RAGAS_RUN_CONFIG_TIMEOUT = int(os.getenv("EVALUATION_RAGAS_RUN_TIMEOUT", "600"))
 
 # M4 — Observabilité : la boucle d'évaluation alimente la même table query_logs
 # que le chat, afin que les analyses de performance couvrent l'ensemble du trafic.
@@ -455,6 +459,7 @@ def run_evaluation(
                 def _score() -> tuple[float, float, float, float]:
                     from datasets import Dataset
                     from ragas import evaluate
+                    from ragas.run_config import RunConfig
 
                     eval_dataset = Dataset.from_dict({
                         "question": [question],
@@ -466,6 +471,7 @@ def run_evaluation(
                     scores = evaluate(
                         dataset=eval_dataset,
                         metrics=metrics,
+                        run_config=RunConfig(timeout=RAGAS_RUN_CONFIG_TIMEOUT),
                     )
 
                     scores_df = scores.to_pandas()
@@ -477,10 +483,10 @@ def run_evaluation(
                         float(first_row.get("context_recall", 0.0)),
                     )
 
-                scored = _run_with_timeout(_score, timeout=budget)
+                scored = _run_with_timeout(_score, timeout=RAGAS_TIMEOUT_SECONDS)
                 if scored is None:
-                    logger.warning("  → Ragas timed out (>%ds) — skipping metrics.", budget)
-                    result.error = f"Ragas timeout dépassé ({budget}s)"
+                    logger.warning("  → Ragas timed out (>%ds) — skipping metrics.", RAGAS_TIMEOUT_SECONDS)
+                    result.error = f"Ragas timeout dépassé ({RAGAS_TIMEOUT_SECONDS}s)"
                 else:
                     (result.faithfulness, result.answer_relevancy,
                      result.context_precision, result.context_recall) = scored

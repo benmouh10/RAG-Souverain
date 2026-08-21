@@ -53,6 +53,8 @@ def init_session_state() -> None:
         st.session_state["chunk_size"] = 512
     if "llm_model" not in st.session_state:
         st.session_state["llm_model"] = "mistral"
+    if "active_conversation_id" not in st.session_state:
+        st.session_state["active_conversation_id"] = None
 
 
 def sign_in(user_id: int, username: str, role: str) -> None:

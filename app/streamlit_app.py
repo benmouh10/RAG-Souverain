@@ -60,7 +60,7 @@ def render_hero_header() -> None:
 
 
 def render_sidebar() -> None:
-    """Sidebar with logo, profile pill, system health box and actions."""
+    """Sidebar with logo, profile pill, system health box, conversations switcher and actions."""
     st.sidebar.markdown(sidebar_logo_html(), unsafe_allow_html=True)
     st.sidebar.markdown("<hr/>", unsafe_allow_html=True)
 
@@ -75,6 +75,72 @@ def render_sidebar() -> None:
         f"</div>",
         unsafe_allow_html=True,
     )
+
+    # Conversations Section
+    user_id = st.session_state.get("user_id")
+    if user_id:
+        from app.app_ui import _load_database
+
+        Database = _load_database()
+        db = Database()
+
+        convs = db.list_conversations(user_id)
+        if not convs:
+            new_id = db.create_conversation(user_id, "New conversation")
+            st.session_state["active_conversation_id"] = new_id
+            convs = db.list_conversations(user_id)
+
+        active_id = st.session_state.get("active_conversation_id")
+        if not active_id or not any(c["conv_id"] == active_id for c in convs):
+            active_id = convs[0]["conv_id"]
+            st.session_state["active_conversation_id"] = active_id
+
+        # 1. New Chat Button (Top)
+        if st.sidebar.button("➕  New Chat", use_container_width=True, key="new_chat_top_btn"):
+            new_id = db.create_conversation(user_id, "New conversation")
+            st.session_state["active_conversation_id"] = new_id
+            st.session_state["messages"] = []
+            st.session_state["chat_history"] = []
+            st.session_state.pop("history_loaded_conv_id", None)
+            st.rerun()
+
+        # 2. Options Expander (Right below New Chat)
+        with st.sidebar.expander("⚙️ Options", expanded=False):
+            current_conv = next((c for c in convs if c["conv_id"] == active_id), None)
+            current_title = current_conv["title"] if current_conv else "New conversation"
+            new_title = st.text_input("Rename Thread", value=current_title, key="rename_conv_title")
+            if st.button("Save", use_container_width=True, key="save_conv_title_btn"):
+                if new_title.strip():
+                    db.rename_conversation(active_id, new_title.strip())
+                    st.rerun()
+            if len(convs) > 1 and st.button("🗑️ Delete Thread", use_container_width=True, key="del_conv_btn"):
+                db.delete_conversation(active_id)
+                st.session_state["active_conversation_id"] = None
+                st.session_state["messages"] = []
+                st.session_state["chat_history"] = []
+                st.session_state.pop("history_loaded_conv_id", None)
+                st.rerun()
+
+        # 3. Recent Conversations Expander (Right below Options, collapsible)
+        with st.sidebar.expander("💬 Recent Conversations", expanded=False):
+            for c in convs:
+                cid = c["conv_id"]
+                is_active = (cid == active_id)
+                title = c["title"] or "New conversation"
+                display_title = f"{'▶ ' if is_active else ''}{title}"
+
+                css_class = "conv-item-active" if is_active else "conv-item-btn"
+                st.markdown(f"<div class='{css_class}'>", unsafe_allow_html=True)
+                if st.button(display_title, key=f"conv_select_{cid}", use_container_width=True):
+                    if cid != active_id:
+                        st.session_state["active_conversation_id"] = cid
+                        st.session_state["messages"] = []
+                        st.session_state["chat_history"] = []
+                        st.session_state.pop("history_loaded_conv_id", None)
+                        st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+
+    st.sidebar.markdown("<hr/>", unsafe_allow_html=True)
 
     # System health box
     try:
@@ -108,11 +174,14 @@ def render_sidebar() -> None:
 
     # Actions
     st.sidebar.markdown(
-        "<div class='sidebar-section-title'>Actions</div>"
+        "<div class='sidebar-section-title'>Actions</div>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(
         "<div class='sidebar-actions'><div class='reset-chat-btn'>",
         unsafe_allow_html=True,
     )
-    if st.sidebar.button("↺ Reset Chat", use_container_width=True):
+    if st.sidebar.button("↺ Reset Current Chat", use_container_width=True):
         reset_chat()
     st.sidebar.markdown("</div><div class='signout-btn'>", unsafe_allow_html=True)
     if st.sidebar.button("Sign Out", use_container_width=True):
@@ -145,12 +214,14 @@ def reset_chat() -> None:
 
     st.session_state["messages"] = []
     st.session_state["chat_history"] = []
-    st.session_state.pop("history_loaded", None)
+    st.session_state.pop("history_loaded_conv_id", None)
     st.session_state.pop("cleanup_done", None)
     try:
         Database = _load_database()
         db = Database()
-        db.clear_chat_history(st.session_state.get("user_id"), conversation_id=1)
+        active_conv_id = st.session_state.get("active_conversation_id")
+        if active_conv_id:
+            db.clear_chat_history(st.session_state.get("user_id"), conversation_id=active_conv_id)
     except Exception:
         logger.exception("Failed to clear chat history from DB")
     st.rerun()
@@ -191,16 +262,17 @@ def main() -> None:
     user_id = st.session_state.get("user_id")
     init_user_session(user_id)
 
-    if "history_loaded" not in st.session_state:
-        from app.app_ui import _load_database
+    active_conv_id = st.session_state.get("active_conversation_id")
+    if user_id and active_conv_id:
+        if st.session_state.get("history_loaded_conv_id") != active_conv_id:
+            from app.app_ui import _load_database
 
-        Database = _load_database()
-        db = Database()
-        saved = db.get_chat_history(user_id, conversation_id=1, limit=200)
-        if saved:
-            st.session_state["messages"] = saved
-            st.session_state["chat_history"] = list(saved)
-        st.session_state["history_loaded"] = True
+            Database = _load_database()
+            db = Database()
+            saved = db.get_chat_history(user_id, conversation_id=active_conv_id, limit=200)
+            st.session_state["messages"] = saved or []
+            st.session_state["chat_history"] = list(st.session_state["messages"])
+            st.session_state["history_loaded_conv_id"] = active_conv_id
 
     render_top_nav()
     render_hero_header()

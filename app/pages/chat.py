@@ -109,7 +109,7 @@ def render_chat_page() -> None:
             logger.info("Auto-cleaned %d 'None' chat messages", deleted_none)
         st.session_state["cleanup_done"] = True
 
-    active_conv_id = 1
+    active_conv_id = st.session_state.get("active_conversation_id") or 1
 
     st.markdown("<div class='section-card'>", unsafe_allow_html=True)
     st.header("Chat RAG")
@@ -146,17 +146,49 @@ def render_chat_page() -> None:
             st.session_state.get("username", "user"),
         )
         st.download_button(
-            "Exporter la conversation (PDF)",
+            "Export Conversation (PDF)",
             data=pdf_bytes,
-            file_name="conversation_rag_souverain.pdf",
+            file_name="sovereign_rag_conversation.pdf",
             mime="application/pdf",
             key="export_pdf_button",
         )
 
-    st.markdown('<a id="bottom-of-chat"></a>', unsafe_allow_html=True)
+    # Search & Retrieval controls expander
+    try:
+        source_files = sorted(list(rag.vector_store.get_source_files()))
+    except Exception:
+        source_files = []
+
+    with st.expander("🔍 Search & Retrieval Controls", expanded=False):
+        c1, c2, c3 = st.columns([2, 1, 1])
+        selected_file_filter = c1.selectbox(
+            "Target Document",
+            options=["All Documents"] + source_files,
+            index=0,
+            key="chat_file_filter_select",
+        )
+        chat_top_k = c2.slider(
+            "Top-K Chunks",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.get("top_k", 4),
+            key="chat_top_k_slider",
+        )
+        toggle_rerank = c3.checkbox(
+            "CrossEncoder Reranker",
+            value=st.session_state.get("toggle_reranker", True),
+            key="toggle_reranker",
+        )
 
     user_query = st.chat_input("Ask your question to the sovereign RAG...")
     if user_query:
+        # Auto-name conversation on first user query if titled "Nouvelle conversation"
+        current_convs = db.list_conversations(user_id)
+        active_conv = next((c for c in current_convs if c["conv_id"] == active_conv_id), None)
+        if active_conv and active_conv.get("title") in ("Nouvelle conversation", "New conversation"):
+            auto_title = user_query.strip()[:35]
+            db.rename_conversation(active_conv_id, auto_title)
+
         st.session_state["messages"].append(build_chat_message("user", user_query))
         st.session_state["chat_history"] = list(st.session_state["messages"])
         db.save_chat_message(user_id, "user", user_query, conversation_id=active_conv_id)
@@ -194,10 +226,12 @@ def render_chat_page() -> None:
             # déclenche une recherche ciblée (filtre ``where``).
             search_query = build_search_query(user_query, conv_history)
             where = _extract_document_filter(search_query, rag.vector_store)
+            if where is None and selected_file_filter != "All Documents":
+                where = {"source_file": selected_file_filter}
 
             with st.status("1. Querying ChromaDB...", expanded=True) as status:
                 try:
-                    results = rag.retriever.retrieve(search_query, top_k=rag.top_k, where=where)
+                    results = rag.retriever.retrieve(search_query, top_k=chat_top_k, where=where)
                     formatted_context = rag.retriever.format_context(results)
                 except ConnectionError:
                     full_response = "ChromaDB is inaccessible. Make sure the service is running."
@@ -223,7 +257,6 @@ def render_chat_page() -> None:
                         for chunk in rag.llm.generate_stream(user_query, formatted_context, conversation_history=conv_history):
                             full_response += chunk
                             response_area.markdown(f"<div class='chat-assistant'>{full_response}</div>", unsafe_allow_html=True)
-                            time.sleep(0.01)
                     except ConnectionError:
                         full_response = "Lost connection to Ollama during generation."
                         response_area.markdown(f"<div class='chat-assistant'>{full_response}</div>", unsafe_allow_html=True)
