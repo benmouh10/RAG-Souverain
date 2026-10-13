@@ -1,0 +1,95 @@
+@startuml
+' Use case diagram for RAG Souverain
+title Cas d'utilisation - RAG Souverain
+
+' Actors
+actor "Utilisateur" as USER
+actor "Administrateur" as ADMIN
+actor "Système" as SYS
+
+' Use cases grouped by subsystem
+
+' --- CHAT & QUESTIONS (for both USER and ADMIN) ---
+package "Chat & Questions" {
+  usecase "Poser une question RAG" as UC1
+  usecase "Réceptionner une salutation" as UC2
+  usecase "Réécriture question de suivi" as UC3
+  usecase "Filtre par nom de fichier" as UC4
+  usecase "Obtenir réponse avec sources" as UC5
+}
+
+' --- ADMINISTRATION ONLY ---
+
+package "Indexation de fichiers" {
+  usecase "Télarger et indexer un document" as UC6
+  usecase "Supprimer un fichier de l'index" as UC7
+  usecase "Lister les fichiers indexés" as UC8
+}
+
+package "Gestion des utilisateurs" {
+  usecase "Créer un compte utilisateur" as UC9
+  usecase "Modifier mot de passe" as UC10
+  usecase "Supprimer un utilisateur" as UC11
+  usecase "Changer le rôle d'un utilisateur" as UC12
+}
+
+package "Évaluation & Audit" {
+  usecase "Lancer l'évaluation Ragas" as UC13
+  usecase "Consulter le rapport d'évaluation" as UC14
+}
+
+package "Monitoring & Paramètres" {
+  usecase "Voir les métriques de performance" as UC15
+  usecase "Configurer paramètres LLM (température, top_k)" as UC16
+}
+
+package "Export & Conversation" {
+  usecase "Exporter conversation en PDF" as UC17
+  usecase "Renommer une conversation" as UC18
+  usecase "Supprimer une conversation" as UC19
+}
+
+' --- CONNEXION & SÉCURITÉ ---
+
+package "Authentification" {
+  usecase "Se connecter" as UC20
+  usecase "Se déconnecter" as UC21
+}
+
+' Relations with actors
+USER .> UC1 : utilise
+USER .> UC2 : utilise
+USER .> UC5 : utilise
+USER .> UC8 : consulte
+USER .> UC17 : exporte
+USER .> UC20 : initie
+USER .> UC21 : initie
+
+ADMIN .> UC1 : utilise
+ADMIN .> UC5 : utilise
+ADMIN .> UC6 : initiate
+ADMIN .> UC7 : initiate
+ADMIN .> UC8 : consulte
+ADMIN .> UC9 : initiate
+ADMIN .> UC10 : initiate
+ADMIN .> UC11 : initiate
+ADMIN .> UC12 : initiate
+ADMIN .> UC13 : initiate
+ADMIN .> UC14 : consulte
+ADMIN .> UC15 : consulte
+ADMIN .> UC16 : configure
+ADMIN .> UC17 : exporte
+ADMIN .> UC18 : manage
+ADMIN .> UC19 : manage
+ADMIN .> UC20 : initie
+ADMIN .> UC21 : initie
+
+' System includes
+SYS .> UC1 : authentification, retrieval, génération
+SYS .> UC6 : parsing, chunking, embedding, indexation
+SYS .> UC9 : hash_password, create_user
+SYS .> UC13 : run_evaluation, Ragas scoring
+SYS .> UC15 : query_logs.stats, latence
+SYS .> UC17 : export_chat_to_pdf
+
+@enduml

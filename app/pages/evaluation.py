@@ -80,10 +80,38 @@ def render_evaluation_page() -> None:
             metrics = [col for col in ("faithfulness", "answer_relevancy", "context_precision", "context_recall") if col in df.columns]
             if metrics:
                 agg = df[metrics].apply(pd.to_numeric, errors="coerce").mean()
+
+                targets = {
+                    "faithfulness": 0.80,
+                    "answer_relevancy": 0.70,
+                    "context_precision": 0.70,
+                    "context_recall": 0.75,
+                }
+
+                st.subheader("Average RAGAS metrics")
                 cols = st.columns(len(agg))
                 for col, (key, value) in zip(cols, agg.items()):
-                    metric_value = f"{value:.2f}" if pd.notna(value) else "N/A"
-                    col.metric(key.replace("_", " ").title(), metric_value)
+                    metric_value = f"{value:.4f}" if pd.notna(value) else "N/A"
+                    cols_delta = float(value) - targets[key] if pd.notna(value) else None
+                    col.metric(
+                        key.replace("_", " ").title(),
+                        metric_value,
+                        delta=f"{cols_delta:+.4f}" if cols_delta is not None else None,
+                        delta_color="normal",
+                    )
+
+                summary_rows = []
+                for key, value in agg.items():
+                    achieved = float(value) if pd.notna(value) else None
+                    passed = achieved is not None and achieved >= targets[key]
+                    summary_rows.append({
+                        "Metric": key.replace("_", " ").title(),
+                        "Target": f"≥ {targets[key]:.2f}",
+                        "Achieved": f"{achieved:.4f}" if achieved is not None else "N/A",
+                        "Status": "✅ Pass" if passed else "❌ Fail",
+                        "Pass Rate": f"{achieved:.2%}" if achieved is not None else "N/A",
+                    })
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
             with st.expander("Show detailed report", expanded=False):
                 st.dataframe(df.fillna("N/A"), use_container_width=True)

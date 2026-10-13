@@ -1,0 +1,310 @@
+@startuml
+' Class diagram for RAG Souverain
+title Modèle de classes - RAG Souverain
+
+' Style
+skinparam monochrome true
+skinparam shadowing false
+skinparam backgroundColor Transparent
+
+' ==========================================
+' ENUMS
+' ==========================================
+
+class ChunkStrategy <<enum>> {
+  +SECTION: String
+  +SLIDING_WINDOW: String
+  +TABLE: String
+  +SQL: String
+}
+
+class ExtractionMethod <<enum>> {
+  +PDF_NATIVE: String
+  +PDF_OCR: String
+  +TEXT: String
+  +SQL: String
+}
+
+' ==========================================
+' DATACLASSES (Value Objects)
+' ==========================================
+
+class TextChunk {
+  -content: String
+  -source_file: String
+  -page_number: int | None
+  -chunk_index: int
+  -strategy: ChunkStrategy
+  -version: int
+  -metadata: dict
+  +to_metadata(): dict
+}
+
+class SQLRecord {
+  -table_name: String
+  -record_id: Any
+  -content: String
+  -metadata: dict
+  -db_path: Path
+  +to_parsed_page(): ParsedPage
+}
+
+class ParsedPage {
+  -content: String
+  -source_file: String
+  -page_number: int | None
+  -extraction_method: ExtractionMethod
+  -file_extension: String
+  -metadata: dict
+  +is_empty: bool
+}
+
+class ParsedDocument {
+  -source_path: Path
+  -pages: list[ParsedPage]
+  +source_file: String
+  +full_text: String
+  +page_count: int
+}
+
+class SQLRecord {
+  +to_parsed_page(): ParsedPage
+}
+
+class User {
+  -user_id: int
+  -username: String
+  -password_hash: String
+  -role: String
+  -created_at: float
+}
+
+class DocVersion {
+  -doc_id: int
+  -filename: String
+  -file_hash: String
+  -version: int
+  -chunk_count: int
+  -indexed_at: float
+}
+
+' ==========================================
+' MAIN CLASSES
+' ==========================================
+
+class RAGEngine {
+  -top_k: int
+  -min_score: float
+  -model_name: String
+  -vector_store: ChromaVectorStore
+  -retriever: Retriever
+  -llm: OllamaLLM | None
+  -sql_engine: SQLQueryEngine
+  -_db: Database
+  +__init__(chroma_persist_dir, collection_name, model_name, top_k, min_score)
+  +_check_ollama(): bool
+  +ingest_sql(db_path): int
+  +ingest_document(file_path, filename, file_data): tuple[int, int]
+  +answer(question): tuple[str, list[dict]]
+  +try_sql_answer(question, file_hint): SQLAnswer | None
+  +should_attempt_sql(question): bool
+}
+
+class ChromaVectorStore {
+  -persist_directory: Path
+  -collection_name: String
+  -embedding_function: LocalEmbeddingFunction
+  -_client: chromadb.PersistentClient
+  -_collection: Collection | None
+  +initialize_collection(reset: bool): Collection
+  +add_chunks(chunks: list[TextChunk], batch_size: int): int
+  +search(query, top_k, where): list[SearchResult]
+  +search_latest(query, top_k, max_version): list[SearchResult]
+  +get_latest_version_all(): int | None
+  +get_latest_version(filename): int
+  +count_by_version(filename, version): int
+  +count(): int
+  +get_source_files(): set[String]
+  +get_all_documents(): list[dict]
+  +delete_by_source(source_filename): int
+  +list_sources(): list[dict]
+  +clear(): int
+}
+
+class Retriever {
+  -vector_store: ChromaVectorStore
+  -_llm: Any | None
+  -_cross_encoder: Any | None
+  -_bm25_index: Any | None
+  -_bm25_docs: list[dict]
+  -_bm25_collection_count: int
+  -_acronym_map: dict | None
+  -_acronym_map_count: int
+  +__init__(vector_store, llm: Any | None = None)
+  +retrieve(query, top_k, min_score, where): list[SearchResult]
+  +format_context(results): String
+  +_bm25_search(query, top_k): list[SearchResult]
+  +_rrf_merge(vector_results, bm25_results, top_k): list[SearchResult]
+  +_get_cross_encoder(): Any
+  +_ensure_bm25_index(vector_store)
+  +_expand_query_acronyms(query, vector_store): String
+}
+
+class OllamaLLM {
+  -model_name: String
+  -base_url: String
+  -temperature: float
+  -last_health: bool | None
+  -_consecutive_failures: int
+  -_circuit_open_until: float
+  +__init__(model_name, base_url, temperature)
+  +health_check(timeout): bool
+  +_register_failure()
+  +circuit_open: bool
+  +build_prompt(query, formatted_context, conversation_history): dict
+  +generate_stream(query, formatted_context, history): Iterator[String]
+  +generate(query, formatted_context, history): String
+  +parse_structured_response(raw_text): dict
+  +generate_hypothetical_answer(question): String
+  +generate_sql(question, schema_text): String
+  +generate_routed_sql(question, schemas): String
+}
+
+class SQLQueryEngine {
+  +should_attempt_sql(question): bool
+  +try_sql_answer(question, file_hint): SQLAnswer | None
+  +answer(question, llm, file_hint): SQLAnswer
+  +has_databases(): bool
+  +is_structured_query(question): bool
+}
+
+class Database {
+  -db_path: Path
+  +__init__(db_path: String | Path = DB_PATH)
+  -_connect(): sqlite3.Connection
+  -_init_db()
+  +create_user(username, password, role): User | None
+  +authenticate(username, password): User | None
+  +get_user_by_username(username): User | None
+  +get_user_by_id(user_id): User | None
+  +list_users(): list[User]
+  +change_password(user_id, new_password): bool
+  +delete_user(user_id): bool
+  +record_ingestion(filename, file_hash, chunk_count): DocVersion
+  +get_latest_version(filename): DocVersion | None
+  +get_file_hash(filename): String | None
+  +list_documents(): list[DocVersion]
+  +get_total_chunks(): int
+  +delete_document(filename): int
+  +create_conversation(user_id, title): int
+  +list_conversations(user_id): list[dict]
+  +rename_conversation(conv_id, title): bool
+  +delete_conversation(conv_id): bool
+  +save_chat_message(user_id, role, content, sources, conversation_id)
+  +get_chat_history(user_id, conversation_id, limit): list[dict]
+  +clear_chat_history(user_id, conversation_id | None)
+  +cleanup_old_messages(max_age_days): int
+  +cleanup_none_messages(user_id): int
+}
+
+' ==========================================
+' VECTOR STORE HELPER
+' ==========================================
+
+class LocalEmbeddingFunction {
+  -_model: SentenceTransformer
+  -_model_name: String
+  +__init__(model_name)
+  +name(): String
+  +__call__(input: list[str]): list[list[float]]
+  +embed_query(query: str): list[float]
+}
+
+class SearchResult {
+  -id: String
+  -content: String
+  -score: float
+  -metadata: dict
+}
+
+' ==========================================
+' PARSING/INGESTION HELPERS
+' ==========================================
+
+class DocumentParser {
+  -ocr_enabled: bool
+  -ocr_language: String
+  -min_text_length: int
+  -ocr_dpi: int
+  -recursive: bool
+  +__init__(ocr_enabled, ocr_language, min_text_length, ocr_dpi, recursive)
+  +parse_file(file_path): ParsedDocument
+  +parse_directory(directory): list[ParsedDocument]
+  +iter_pages(directory): Iterator[ParsedPage]
+  +_parse_pdf(path): list[ParsedPage]
+  +_parse_text_file(path): ParsedPage
+  +_needs_ocr(text): bool
+}
+
+class AdaptiveChunker {
+  -chunk_size: int
+  -chunk_overlap: int
+  -tokenizer_model: String
+  +__init__(chunk_size, chunk_overlap, tokenizer_model)
+  +chunk_documents(documents: list[ParsedDocument]): list[TextChunk]
+  +chunk_document(document: ParsedDocument): list[TextChunk]
+  +_chunk_page(page, start_index): list[TextChunk]
+  +_is_table(text): bool
+  +_chunk_by_table(page, start_index): list[TextChunk]
+  +_chunk_sql(page, start_index): list[TextChunk]
+  +_is_structured(text): bool
+  +_chunk_by_sections(text, *, source_file, page_number, start_index): list[TextChunk]
+  +_chunk_by_sliding_window(text, *, source_file, page_number, start_index, section_title): list[TextChunk]
+  +_split_into_sections(text): list[tuple[String, String]]
+  +_get_tokenizer(): Any
+  +_encode(text): list[int]
+  +_decode(token_ids): String
+  +_count_tokens(text): int
+}
+
+' ==========================================
+' RELATIONSHIPS/INHERITANCE
+' ==========================================
+
+' Inheritance
+User <|-- DocVersion : inherits dataclass structure
+
+' Composition / Aggregation
+RAGEngine "1" *-- "1" ChromaVectorStore : utilise
+RAGEngine "1" *-- "1" Retriever : utilise
+RAGEngine "1" *-- "1" OllamaLLM : utilise (optionnel)
+RAGEngine "1" *-- "1" SQLQueryEngine : utilise
+RAGEngine "1" *-- "1" Database : manages
+
+Retriever "1" *-- "1" ChromaVectorStore : accède
+Retriever "0..1" *-- "1" OllamaLLM : utilise pour HyDE
+
+ChromaVectorStore "1" *-- "1" LocalEmbeddingFunction : utilise
+ChromaVectorStore "1" *-- "1" SearchResult : retourne
+
+TextChunk "1" *-- "1" ChunkStrategy : possède
+TextChunk "1" *-- "1" TextChunk.metadata : contient
+
+SQLRecord "1" *-- "1" ParsedPage : convertit
+ParsedDocument "1" *-- "*" ParsedPage : contient
+DocumentParser "1" *-- "*" ExtractionMethod : utilise
+AdaptiveChunker "1" *-- "*" ChunkStrategy : utilise
+AdaptiveChunker "1" *-- "1" TextChunk : produit
+
+' ==========================================
+' NOTES
+' ==========================================
+
+note right of RAGEngine: Orchestrateur principal - pipeline retrieval+génération\
+note right of OllamaLLM: Client local avec circuit breaker (M2)\
+note right of Database: SQLite centralisée - users + versionnage global\
+note right of AdaptiveChunker: Découpage adaptatif selon type contenu\
+note right of Retriever: Recherche hybride vectoriel+BM25→RRF→reranking\
+end note
+
+@enduml

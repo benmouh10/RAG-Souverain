@@ -1,0 +1,110 @@
+@startuml
+' Sequence diagram: Chat question flow
+title Séquence Chat - Du question à la réponse
+
+' Actors
+actor "Utilisateur" as USER
+participant "Streamlit UI" as UI
+participant "RAGEngine" as RE
+participant "Retriever" as Retr
+participant "ChromaDB" as CDB
+participant "Ollama LLM" as LLM
+participant "Base SQL" as SQLDB
+participant "Query Logger" as QL
+
+' Lifelines
+user USER
+participant UI
+participant RE
+participant Retr
+participant CDB
+participant LLM
+participant SQLDB
+participant QL
+
+' ==========================================
+' FLOW START
+' ==========================================
+
+USER -> UI: Pose une question
+UI -> RE: init_rag_engine() + question
+RE -> RE: _check_ollama() santé LLM
+alt LLM disponible
+  RE -> RE: is_greeting(question)
+  alt C'est une salutation
+    RE -> UI: Réponse immédiate "Bonjour !"
+    UI -> USER: Affiche salutation
+    stop
+  else Pas salutation
+    RE -> RE: build_search_query(question, history)
+    RE -> RE: _extract_document_filter(question, vector_store)
+    
+    ' Chemin text-to-SQL d'abord
+    RE -> RE: should_attempt_sql(question)
+    alt Doit tenter SQL
+      RE -> SQLDB: has_databases() + is_structured_query
+      SQLDB -- RE: retourne bases disponibles
+      RE -> LLM: generate_sql(question, schema)
+      LLM -- RE: retourne SQL query
+      RE -> SQLDB: answer(SQL query)
+      SQLDB -- RE: résultats SQL
+      RE -> UI: réponse HTML + contextes
+      UI -> USER: Affiche réponse SQL
+      RE -> QL: log(question, scores, latences)
+      QL --: stocké en SQLite
+      stop
+    else Non SQL
+      ' Pipeline RAG vectoriel
+      note right of RE: 1. Filtre fichier détecté
+      endif
+      
+      note right of RE: 2. Retrieval pipeline
+      RETRIEVER reçoit: question, top_k, min_score, where
+      
+      RETRIEVER -> CDB: search(query, top_k, where)
+      CDB -- RETRIEVEUR: résultats vectoriels + distances
+      
+      RETRIEVEUR -> RETRIEVEUR: _expand_query_acronyms()
+      RETRIEVEUR -> RETRIEVEUR: _ensure_bm25_index()
+      RETRIEVEUR -> CDB: get_all_documents()
+      
+      ' RRF fusion
+      RETRIEVEUR -> RETRIEVEUR: _rrf_merge(vector_results, bm25_results)
+      
+      ' CrossEncoder reranking
+      RETRIEVEUR -> RETRIEVEUR: _get_cross_encoder()
+      RETRIEVEUR -> RETRIEVEUR: CrossEncoder.predict(pairs)
+      RETRIEVEUR -> RETRIEUREUR: normalisation min-max
+      RETRIEVEUR -> RETRIEUREUR: blended score = (1-w)*RRF + w*CE
+      
+      RETRIEVEUR -> RETRIEUREUR: déduplication contenu
+      RETRIEVEUR -> RETRIEUREUR: format_context(results)
+      
+      note right of RETRIEVEUR: Top-k résultats finaux
+      endif
+      
+      ' 3. Génération LLM
+      note right of RE: 3. Ollama génération
+      RE -> LLM: build_prompt(question, formatted_context, history)
+      LLM -> RE: generate_stream()
+      
+      loop Streaming tokens
+        LLM -> RE: chunks token par token
+        RE -> UI: envoie token
+        UI -> USER: affiche en temps réel
+      end
+      
+      RE -> UI: réponse finale complète
+      UI -> USER: Affiche réponse avec citations [1], [2]...
+      
+      ' 4. Journalisation
+      RE -> QL: log(question, top1_score, mean_score, num_chunks, llm_latency, total_latency, model_used, source_files)
+      QL --: stocké
+    end
+  end
+else Ollama indisponible
+  RE -> UI: "Erreur: Ollama indisponible"
+  UI -> USER: Message d'erreur gracieux
+end
+
+@enduml

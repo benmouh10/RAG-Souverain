@@ -1,0 +1,82 @@
+@startuml
+' Component diagram for RAG Souverain
+title Schéma des composants - RAG Souverain
+
+' Style definitions
+skinparam component {
+  BackgroundColor OrangeRed
+  BorderColor white
+  BackgroundColor2 OrangeRed
+}
+skinparam packageBackgroundColor LightGray
+skinparam packageBorderColor #cccccc
+
+' Packages
+package "Interface Utilisateur" {
+  component "Streamlit UI" as UI {
+    note right "Point d'entrée: streamlit run\nPages: Chat, Files, Admin, Evaluation, Performance\nRBAC: user/admin roles"
+  }
+}
+
+package "Couche Cœur" {
+  component "RAGEngine" as RE {
+    note right "Orchestrateur principal\nPipeline: retrieval + génération\nDeux chemins: SQL vs Vectorial\nGestion versionnage documents"
+  }
+  
+  component "SQLQueryEngine" as SQLE {
+    note right "Text-to-SQL\nGénération + exécution queries\nBases SQLite ingérées"
+  }
+}
+
+package "Recherche & Vectoriel" {
+  component "ChromaVectorStore" as CVS {
+    note right "Index vectoriel ChromaDB\nEmbeddings: sentence-transformers multilingue\nRecherche similarity cosine"
+  }
+  
+  component "Retriever" as Retr {
+    note right "Pipeline de recherche hybride\nVectoriel + BM25 → RRF\nCrossEncoder reranking\nExpansion HyDE/acronymes"
+  }
+}
+
+package "LLM & Génération" {
+  component "OllamaLLM" as LLM {
+    note right "Client Ollama local\nModèle: Mistral\nCircuit breaker (M2)\nStreaming + génération pleine\nHealth check + failover"
+  }
+}
+
+package "Base de Données" {
+  component "Database (SQLite)" as DB {
+    note right "Tables: users, doc_versions, conversations, chat_history\nHash SHA-256 pour déduplication\nVersionnage global (clé filename)"
+  }
+}
+
+package "Ingestion" {
+  component "DocumentParser" as DP {
+    note right "Parsing multi-format: PDF, TXT, MD, CSV, SQL\nOCR fallback pour PDF scannés\nExtractionMethod enum"
+  }
+  
+  component "AdaptiveChunker" as AC {
+    note right "Stratégies: SECTION, SLIDING_WINDOW, TABLE, SQL\nChunk size/overlap configurable\nTextChunk dataclass immuable"
+  }
+}
+
+' Relations entre composants
+UI .> RE : HTTP/Streamlit
+RE .> CVS : vector_store, search()
+RE .> Retr : retrieve() + format_context()
+RE .> LLM : generate(), build_prompt()
+RE .> SQLE : answer() + should_attempt_sql()
+RE .> DB : record_ingestion, get_latest_version, authenticate, save_chatMessage
+DP .> AC : chunk_documents()
+DP .> DB : compute_file_hash, record_ingestion
+AC .> TextChunk : crée les chunks
+CVS .> embeddings : sentence-transformers
+LLM .> Ollama : HTTP /api/chat, /api/tags
+
+' Navigation entre packages
+UI -> RE : REST API / Session
+RE -> DB : SQLite queries
+RE -> CVS : ChromaDB queries
+RE -> LLM : HTTP requests
+
+@enduml

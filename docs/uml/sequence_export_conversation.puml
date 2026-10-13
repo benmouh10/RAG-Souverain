@@ -1,0 +1,42 @@
+@startuml
+' Sequence diagram: Export conversation
+title Séquence Export Conversation - Export vers PDF
+
+' Actors
+actor "Utilisateur" as USER
+participant "Streamlit UI" as UI
+participant "Database" as DB
+participant "Session State" as SS
+participant "fpdf2" as PDF
+
+' Lifelines
+participant USER
+participant UI
+participant DB
+participant SS
+participant PDF
+
+' ==========================================
+' FLOW: Export Conversation to PDF
+' ==========================================
+
+USER -> UI: Sélectionne une conversation dans la sidebar
+UI -> SS: get active_conversation_id
+SS -> DB: get_chat_history(user_id, conversation_id)
+DB -- UI: historique messages + sources (JSON)
+
+UI -> UI: reset_upload_widget_state() pour clé unique
+UI -> PDF: export_chat_to_pdf(messages, username)
+
+note right of PDF: Classe ChatPDF (fpdf2) :
+  • entête: titre "RAG Souverain", utilisateur
+  • pied de page: "Page X / Y"
+  • pour chaque message :
+    - rôle (User/Assistant) + contenu sanitized
+    - sources citées avec fichiers + scores
+  • format latin-1 pour caractères spéciaux
+
+UI -> USER: bouton téléchargement PDF
+USER -> USER: télécharge fichier bytes(pdf.output())
+
+@enduml

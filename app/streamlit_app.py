@@ -113,13 +113,20 @@ def render_sidebar() -> None:
                 if new_title.strip():
                     db.rename_conversation(active_id, new_title.strip())
                     st.rerun()
-            if len(convs) > 1 and st.button("🗑️ Delete Thread", use_container_width=True, key="del_conv_btn"):
-                db.delete_conversation(active_id)
-                st.session_state["active_conversation_id"] = None
-                st.session_state["messages"] = []
-                st.session_state["chat_history"] = []
-                st.session_state.pop("history_loaded_conv_id", None)
-                st.rerun()
+            if len(convs) > 1:
+                st.markdown("<div class='delete-btn'>", unsafe_allow_html=True)
+                if st.button("🗑️ Delete Thread", use_container_width=True, key="del_conv_btn"):
+                    db.delete_conversation(active_id)
+                    st.session_state["active_conversation_id"] = None
+                    st.session_state["messages"] = []
+                    st.session_state["chat_history"] = []
+                    st.session_state.pop("history_loaded_conv_id", None)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("<div class='reset-chat-btn'>", unsafe_allow_html=True)
+            if st.button("↺ Reset Current Chat", use_container_width=True):
+                reset_chat()
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # 3. Recent Conversations Expander (Right below Options, collapsible)
         with st.sidebar.expander("💬 Recent Conversations", expanded=False):
@@ -129,7 +136,8 @@ def render_sidebar() -> None:
                 title = c["title"] or "New conversation"
                 display_title = f"{'▶ ' if is_active else ''}{title}"
 
-                css_class = "conv-item-active" if is_active else "conv-item-btn"
+                # Apply the new CSS class for recent conversations
+                css_class = "conversation-item"
                 st.markdown(f"<div class='{css_class}'>", unsafe_allow_html=True)
                 if st.button(display_title, key=f"conv_select_{cid}", use_container_width=True):
                     if cid != active_id:
@@ -172,21 +180,11 @@ def render_sidebar() -> None:
 
     st.sidebar.markdown("<hr/>", unsafe_allow_html=True)
 
-    # Actions
-    st.sidebar.markdown(
-        "<div class='sidebar-section-title'>Actions</div>",
-        unsafe_allow_html=True,
-    )
-    st.sidebar.markdown(
-        "<div class='sidebar-actions'><div class='reset-chat-btn'>",
-        unsafe_allow_html=True,
-    )
-    if st.sidebar.button("↺ Reset Current Chat", use_container_width=True):
-        reset_chat()
-    st.sidebar.markdown("</div><div class='signout-btn'>", unsafe_allow_html=True)
+    # Sign Out
+    st.sidebar.markdown("<div class='signout-btn'>", unsafe_allow_html=True)
     if st.sidebar.button("Sign Out", use_container_width=True):
         sign_out()
-    st.sidebar.markdown("</div></div>", unsafe_allow_html=True)
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_top_nav() -> str:
@@ -244,7 +242,7 @@ def main() -> None:
     Ordonnance le rendu : styles globaux, session, porte de connexion RBAC,
     navigation en bandeau et délégation vers la page sélectionnée.
     """
-    st.set_page_config(page_title="RAG Souverain — UI", layout="wide")
+    st.set_page_config(page_title="RAG Souverain - UI", layout="wide")
     st.markdown('<a id="top-of-page"></a>', unsafe_allow_html=True)
     inject_styles()
     init_session_state()

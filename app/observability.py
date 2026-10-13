@@ -99,14 +99,18 @@ class QueryLogger:
         return results
 
     def get_stats(self, limit: int = 50) -> dict[str, Any]:
-        """Get aggregated stats for recent queries."""
+        """Get aggregated stats for recent queries and total lifetime queries."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) as total FROM query_logs").fetchone()
+            total_queries = row["total"] if row else 0
+
         recent = self.get_recent(limit)
         if not recent:
             return {
                 "avg_top1_score": 0.0,
                 "avg_mean_score": 0.0,
                 "avg_latency_ms": 0.0,
-                "query_count": 0,
+                "query_count": total_queries,
                 "top_sources": [],
             }
 
@@ -125,6 +129,6 @@ class QueryLogger:
             "avg_top1_score": round(avg_top1, 4),
             "avg_mean_score": round(avg_mean, 4),
             "avg_latency_ms": round(avg_latency, 1),
-            "query_count": len(recent),
+            "query_count": total_queries,
             "top_sources": [{"source": s, "count": c} for s, c in top_sources],
         }

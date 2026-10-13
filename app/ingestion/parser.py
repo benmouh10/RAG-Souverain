@@ -15,7 +15,7 @@ from typing import Iterator, Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".csv"}
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".sql"}
 DEFAULT_OCR_LANGUAGE = "fra"
 DEFAULT_MIN_TEXT_LENGTH = 10
 DEFAULT_OCR_DPI = 300
@@ -78,11 +78,12 @@ class SQLRecord:
     record_id: Any
     content: str
     metadata: dict[str, Any]
+    db_path: Path
 
     def to_parsed_page(self) -> ParsedPage:
         return ParsedPage(
             content=self.content,
-            source_file=self.table_name,
+            source_file=self.db_path.name,
             page_number=None,
             extraction_method=ExtractionMethod.SQL,
             file_extension=".sql",
@@ -113,11 +114,15 @@ class SQLParser:
             self._connection = None
 
     def get_tables(self) -> list[str]:
-        """Récupère la liste des tables de la base de données."""
+        """Récupère la liste des tables de la base de données.
+
+        Exclut les tables internes de SQLite (``sqlite_sequence``, etc.) qui
+        n'ont aucune valeur métier et pollueraient l'index RAG.
+        """
         conn = self._connect()
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-        return [row[0] for row in cursor.fetchall()]
+        return [row[0] for row in cursor.fetchall() if not row[0].startswith("sqlite_")]
 
     def get_primary_key(self, table_name: str) -> str | None:
         """Récupère la clé primaire d'une table."""
@@ -145,11 +150,15 @@ class SQLParser:
             row_dict = dict(row)
             record_id = row_dict.get(primary_key, len(records)) if primary_key else len(records)
 
-            content_lines = [f"--- Table: {table_name} ---"]
-            content_lines.append(f"ID: {record_id}")
-            content_lines.append("")
+            content_lines = [
+                f"[Fichier DB/SQL: {self.db_path.name}]",
+                f"Table: {table_name}",
+                f"Enregistrement ID: {record_id}",
+                "Données :",
+            ]
             for key, value in row_dict.items():
-                content_lines.append(f"{key}: {value}")
+                if value is not None and str(value).strip() != "":
+                    content_lines.append(f"  - {key}: {value}")
 
             records.append(
                 SQLRecord(
@@ -157,11 +166,13 @@ class SQLParser:
                     record_id=record_id,
                     content="\n".join(content_lines),
                     metadata={
+                        "source_file": self.db_path.name,
                         "table_name": table_name,
                         "record_id": record_id,
                         "columns": list(row_dict.keys()),
                         "data": row_dict,
                     },
+                    db_path=self.db_path,
                 )
             )
 
@@ -364,12 +375,19 @@ class DocumentParser:
 
     @staticmethod
     def _read_text_with_fallback(path: Path) -> str:
+        """Read a text file robustly.
+
+        Attempts UTF-8, UTF-8-sig, then Latin-1. If all fail (or any
+        exception is raised), decode the raw bytes with ``errors='replace'``
+        so the caller never receives a ``UnicodeDecodeError``.
+        """
         for encoding in ("utf-8", "utf-8-sig", "latin-1"):
             try:
                 return path.read_text(encoding=encoding)
-            except UnicodeDecodeError:
+            except Exception:
                 continue
         return path.read_bytes().decode("utf-8", errors="replace")
+
 
     def _needs_ocr(self, text: str) -> bool:
         return len(text.strip()) < self.min_text_length

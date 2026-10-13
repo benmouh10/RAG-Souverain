@@ -164,6 +164,29 @@ section.main > div[role="main"] > div:first-child { padding-top: 6px; }
 }
 
 /* ==========================================================================
+   Text-to-SQL answers (structured/aggregate questions)
+   ========================================================================== */
+.sql-answer {
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.sql-result-table {
+  margin-top: 4px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  max-width: 100%;
+  overflow-x: auto;
+  display: block;
+}
+.sql-result-table thead, .sql-result-table tbody { display: table; width: 100%; table-layout: auto; }
+.sql-note {
+  font-size: 12px;
+  color: #64748B;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* ==========================================================================
    Source cards
    ========================================================================== */
 .source-card {
@@ -412,14 +435,45 @@ div[data-baseweb="input"] > div:last-child {
 }
 
 /* ==========================================================================
-   Sidebar action buttons — Reset Chat & Sign Out
+   Sidebar section labels — clean text, no box containers
    ========================================================================== */
-.sidebar-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.sidebar-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #64748B;
+  margin: 8px 0 4px;
+  padding: 0;
 }
-.sidebar-actions [data-testid="stButton"] > button {
+
+/* ==========================================================================
+   Sidebar — Recent Conversations items
+   ========================================================================== */
+.conversation-item {
+  margin-bottom: 4px;
+}
+.conversation-item [data-testid="stButton"] > button {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  background: #F8FAFC;
+  font-size: 13px;
+  color: #0F172A;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.conversation-item [data-testid="stButton"] > button:hover {
+  border-color: rgba(37, 99, 235, 0.30);
+  background: #E0F2FE;
+  color: #1e40af;
+}
+
+/* ==========================================================================
+   Sidebar action buttons
+   ========================================================================== */
+.reset-chat-btn [data-testid="stButton"] > button {
   width: 100%;
   height: 38px;
   border-radius: 999px;
@@ -427,9 +481,6 @@ div[data-baseweb="input"] > div:last-child {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
-}
-/* Reset Chat — compact soft blue, warm amber on hover */
-.reset-chat-btn [data-testid="stButton"] > button {
   background: linear-gradient(135deg, #eff6ff, #ecfeff);
   border: 1px solid rgba(37, 99, 235, 0.25);
   color: #1d4ed8;
@@ -439,16 +490,43 @@ div[data-baseweb="input"] > div:last-child {
   border-color: rgba(245, 158, 11, 0.45);
   color: #b45309;
 }
-/* Sign Out — compact outline, muted red */
+
+/* Delete Thread — destructive red */
+.delete-btn [data-testid="stButton"] > button {
+  width: 100%;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 68, 68, 0.40);
+  background: #FECACA;
+  color: #B91C1C;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 0 12px;
+}
+.delete-btn [data-testid="stButton"] > button:hover {
+  border-color: #F87171;
+  background: #FCA5A5;
+  color: #7F1D1D;
+}
+
+/* Sign Out — destructive red theme */
 .signout-btn [data-testid="stButton"] > button {
-  background: #FFFFFF;
-  border: 1px solid rgba(239, 68, 68, 0.45);
-  color: #EF4444;
+  width: 100%;
+  height: 38px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: #FEE2E2;
+  border: 1px solid #F87171;
+  color: #B91C1C;
 }
 .signout-btn [data-testid="stButton"] > button:hover {
-  background: #FEF2F2;
-  border-color: #EF4444;
-  color: #B91C1C;
+  background: #FCA5A5;
+  border-color: #F87171;
+  color: #7F1D1D;
 }
 
 /* ==========================================================================
@@ -635,6 +713,38 @@ div[data-baseweb="input"] > div:last-child {
   padding: 6px 10px !important;
   margin: 0 !important;
 }
+
+/* Dark mode overrides */
+[data-theme='dark'] html, [data-theme='dark'] body, [data-theme='dark'] [class*='css'] {
+  background: #1e1e1e !important;
+  color: #e0e0e0 !important;
+}
+[data-theme='dark'] .stAppHeader {
+  background: #2d2d2d !important;
+}
+[data-theme='dark'] .metric-card, [data-theme='dark'] .status-summary-card, [data-theme='dark'] .section-card, [data-theme='dark'] .sidebar-card, [data-theme='dark'] .profile-pill, [data-theme='dark'] .role-pill {
+  background: #2d2d2d !important;
+  border-color: #444 !important;
+  color: #e0e0e0 !important;
+}
+[data-theme='dark'] .chat-user, [data-theme='dark'] .chat-assistant {
+  background: #2a2a2a !important;
+  color: #e0e0e0 !important;
+  border-color: #444 !important;
+}
+[data-theme='dark'] .sidebar-section-title, [data-theme='dark'] .sidebar-section-label, [data-theme='dark'] .sidebar-card .label, [data-theme='dark'] .sidebar-card .value, [data-theme='dark'] .sidebar-health .row span:first-child {
+  color: #c0c0c0 !important;
+}
+[data-theme='dark'] .conversation-item [data-testid="stButton"] > button {
+  background: #2d2d2d !important;
+  color: #e0e0e0 !important;
+  border-color: #555 !important;
+}
+[data-theme='dark'] .reset-chat-btn button, [data-theme='dark'] .delete-btn button, [data-theme='dark'] .signout-btn button {
+  background: #3a3a3a !important;
+  border-color: #777 !important;
+  color: #ff6b6b !important;
+}
 </style>
 """
 
@@ -644,7 +754,7 @@ def inject_styles() -> None:
 
 
 def hide_sidebar_style() -> str:
-    """CSS to fully hide the sidebar — used on the login/auth view."""
+    """CSS to fully hide the sidebar - used on the login/auth view."""
     return (
         "<style>"
         "[data-testid='stSidebar'] { display: none !important; }"
@@ -653,7 +763,7 @@ def hide_sidebar_style() -> str:
 
 
 def sidebar_logo_html() -> str:
-    """Sidebar logo block — clean and centered at the top."""
+    """Sidebar logo block - clean and centered at the top."""
     return (
         "<div class='sidebar-logo'>"
         "<div class='logo-badge'>R</div>"

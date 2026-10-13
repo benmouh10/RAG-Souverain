@@ -36,12 +36,12 @@ def render_file_indexation_page() -> None:
 
     st.markdown("<div class='section-card'>", unsafe_allow_html=True)
     st.header("Files Indexation")
-    st.caption("Upload and index documents (PDF, TXT, MD, CSV) into the local vector store.")
+    st.caption("Upload and index documents (PDF, TXT, MD, CSV, DB) into the local vector store.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     uploaded_files = st.file_uploader(
-        "Files (PDF, TXT, MD, CSV)",
-        type=["pdf", "txt", "md", "csv"],
+        "Files (PDF, TXT, MD, CSV, DB)",
+        type=["pdf", "txt", "md", "csv", "db"],
         accept_multiple_files=True,
         help="Select one or more documents to index into ChromaDB in a single batch",
         key=get_upload_widget_key(),

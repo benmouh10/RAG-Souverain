@@ -1,0 +1,68 @@
+@startuml
+!define docker https://raw.githubusercontent.com/plantuml-stdlib/docker-meta/master/img/
+!define sysu https://raw.githubusercontent.com/plantuml-stdlib/sysu-metadata/master/img/
+
+' Deployment architecture for RAG Souverain
+title Architecture de déploiement - RAG Souverain
+
+' Docker services
+account "Réseau Docker" {
+  skinparam backgroundColor #f0f8ff
+  skinparam borderColor #1c6bcc
+  
+  group "Service Application" {
+    component "rag-app" # LightBlue <<Container>> {
+      note right "Port: 8501\nStreamlit UI\nPython backend\nDockerfile"
+    }
+  }
+  
+  group "Service Watcher" {
+    component "ingestion-watcher" # LightGreen <<Container>> {
+      note right "python -m app.ingestion.watcher\nSurveillance data/documents\nNouveautés auto-indexées"
+    }
+  }
+  
+  group "Stocks Persistants" {
+    persistent_volume "data/chroma" # LightGray {
+      note "Base vectorielle ChromaDB"
+    }
+    persistent_volume "data/rag.db" # LightGray {
+      note "SQLite: users, versions, chats"
+    }
+    persistent_volume "data/evaluation_report.csv" # LightGray {
+      "Rapports d'évaluation"
+    }
+    persistent_volume "data/documents" # LightGray {
+      "Documents sources (lecture seule)"
+    }
+  }
+  
+  group "Hôte" {
+    node "Host" # LightYellow {
+      component "Ollama" # LightCyan {
+        note right "Port: 11434\nLLM local Mistral\nModèles: embeddings, generation"
+      }
+      component "HDocker Internal" # LightCyan {
+        note "Accès réseau: host.docker.internal:11434\nSouveraineté réseau iptables"
+      }
+    }
+  }
+  
+  group "Règles Sécurité" {
+    skinparam style carking
+    component "iptables" # LightSalmon {
+      note right "OUTPUT DROP par défaut\nAllowlist: loopback + Ollama hôte\nCAP_NET_ADMIN pour iptables"
+    }
+  }
+  
+  ' Connexions
+  rag-app --> data/chroma : Montage volume
+  rag-app --> data/rag.db : Montage volume
+  rag-app --> data/evaluation_report.csv : Montage volume
+  rag-app -- Ollama : HTTP/11434
+  rag-app -- host.docker.internal : Réseau interne
+  ingestion-watcher -- data/chroma : Mise à jour index
+  ingestion-watcher -- data/rag.db : Mise à jour versionnage
+}
+
+@enduml

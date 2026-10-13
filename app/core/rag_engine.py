@@ -20,12 +20,20 @@ Historique du remaniement :
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
+from app.core.sql_query_engine import (
+    SQLAnswer,
+    SQLGenerationError,
+    SQLSafetyError,
+    SQLQueryEngine,
+    is_structured_query,
+)
 from app.generation.llm import OllamaLLM
 from app.indexing.vector_store import ChromaVectorStore
 from app.retrieval.retriever import Retriever
@@ -63,7 +71,7 @@ MIN_SCORE = 0.0
 # (ex. « cherche dans CV_BENMOUH_Mohamed.pdf »). Le nom est ensuite résolu
 # contre les fichiers réellement indexés avant d'appliquer un filtre ``where``.
 # Convention du dépôt : noms de fichiers sans espace (séparateur ``_``).
-_FILENAME_RE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_.\-]*\.(?:pdf|md|txt|sql))", re.IGNORECASE)
+_FILENAME_RE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_.\-]*\.(?:pdf|md|txt|sql|db))", re.IGNORECASE)
 
 
 def _extract_document_filter(question: str, vector_store: ChromaVectorStore) -> dict[str, Any] | None:
@@ -163,6 +171,13 @@ class RAGEngine:
         # Initialisation du Retriever
         self.retriever = Retriever(vector_store=self.vector_store, llm=self.llm)
 
+        # Moteur text-to-SQL : chemin alternatif pour les questions
+        # structurées/agrégées (voir sql_query_engine module docstring).
+        # Toujours instancié (découverte de fichiers .db + introspection ne
+        # nécessitent pas Ollama) ; seule la génération de SQL a besoin du
+        # LLM, vérifié au moment de l'appel dans try_sql_answer().
+        self.sql_engine = SQLQueryEngine()
+
         # DB pour le versionnage global des documents indexés (C1/Mo4)
         from app.database import Database
 
@@ -182,9 +197,27 @@ class RAGEngine:
             return False
 
     def ingest_sql(self, db_path: str | Path) -> int:
-        """Parse une base SQLite et indexe tous les enregistrements."""
+        """Parse une base SQLite et indexe tous les enregistrements.
+
+        Comme ``ingest_document``, l'ingestion est idempotente : un fichier
+        ``.db`` dont le contenu n'a pas changé (même hash) n'est pas
+        ré-indexé, et un fichier modifié voit ses anciens chunks supprimés
+        avant l'ajout des nouveaux — sans ce nettoyage, ré-uploader deux fois
+        le même fichier (ou une version mise à jour) empilait indéfiniment
+        des chunks dupliqués/obsolètes dans ChromaDB.
+        """
+        from app.database import compute_file_hash
         from app.ingestion.chunker import AdaptiveChunker
         from app.ingestion.parser import SQLParser
+
+        db_path = Path(db_path)
+        filename = db_path.name
+        file_hash = compute_file_hash(db_path.read_bytes())
+
+        existing_hash = self._db.get_file_hash(filename)
+        if existing_hash == file_hash:
+            logger.info("SQL '%s' inchangé depuis le dernier import — ignoré.", filename)
+            return 0
 
         parser = SQLParser(db_path)
         sql_doc = parser.to_parsed_documents()
@@ -193,8 +226,18 @@ class RAGEngine:
         chunker = AdaptiveChunker()
         chunks = chunker.chunk_documents([sql_doc])
 
+        # Supprime les chunks d'une éventuelle ingestion précédente du même
+        # fichier (par nom) avant d'ajouter les nouveaux, pour éviter les
+        # doublons/contenus obsolètes.
+        removed = self.vector_store.delete_by_source(filename)
+        if removed:
+            logger.info("%d ancien(s) chunk(s) supprimé(s) pour '%s' avant ré-indexation.", removed, filename)
+
+        doc_version = self._db.record_ingestion(filename, file_hash, len(chunks))
+        chunks = [dataclasses.replace(chunk, version=doc_version.version) for chunk in chunks]
+
         added = self.vector_store.add_chunks(chunks)
-        logger.info("SQL ingéré : %d chunks depuis %s", added, db_path)
+        logger.info("SQL ingéré : %d chunks depuis %s (version %d)", added, db_path, doc_version.version)
         return added
 
     def ingest_document(
@@ -202,6 +245,8 @@ class RAGEngine:
         file_path: str | Path,
         filename: str,
         file_data: bytes,
+        *,
+        chunk_size: int | None = None,
     ) -> tuple[int, int]:
         """Indexe un document avec suivi de version global (C1/Mo4).
 
@@ -225,19 +270,32 @@ class RAGEngine:
         if parsed_documents.page_count == 0:
             raise ValueError(f"Le fichier '{filename}' ne contient aucun contenu exploitable.")
 
-        chunker = AdaptiveChunker()
+        chunker = AdaptiveChunker(chunk_size=chunk_size) if chunk_size else AdaptiveChunker()
         chunks = chunker.chunk_documents([parsed_documents])
 
         if not chunks:
             raise ValueError(f"Aucun chunk généré depuis '{filename}'.")
+
+        # Supprime les chunks d'une éventuelle ingestion précédente du même
+        # fichier (première indexation "sale" ou nouvelle version) avant
+        # d'ajouter les nouveaux chunks. Sans cela, ré-uploader une nouvelle
+        # version d'un fichier empile ses chunks à côté des anciens dans
+        # ChromaDB : les deux versions restent alors mélangées au retrieval
+        # (aucun filtre par version n'est appliqué en recherche normale),
+        # produisant des réponses incohérentes ou contradictoires.
+        removed = self.vector_store.delete_by_source(filename)
+        if removed:
+            logger.info("%d ancien(s) chunk(s) supprimé(s) pour '%s' avant ré-indexation.", removed, filename)
 
         # La version n'est enregistrée qu'une fois le parsing/chunking réussi,
         # ce qui évite les lignes orphelines en cas d'échec (chunk_count = 0).
         doc_version = self._db.record_ingestion(filename, file_hash, len(chunks))
         version = doc_version.version
 
-        for chunk in chunks:
-            chunk.version = version
+        # TextChunk est un dataclass frozen (immuable) : `chunk.version = ...`
+        # lève FrozenInstanceError. dataclasses.replace() construit de
+        # nouvelles instances versionnées à la place.
+        chunks = [dataclasses.replace(chunk, version=version) for chunk in chunks]
 
         added = self.vector_store.add_chunks(chunks)
         self.vector_store.initialize_collection()
@@ -245,13 +303,56 @@ class RAGEngine:
         logger.info("Document ingéré : %d chunks, version %d, fichier=%s", added, version, filename)
         return added, version
 
+    def should_attempt_sql(self, question: str) -> bool:
+        """True si la question a l'air structurée/agrégée ET qu'au moins une
+        base SQLite a été ingérée. Ne garantit pas le succès de la
+        génération/exécution — seulement que la tentative vaut le coût."""
+        return (
+            self.llm is not None
+            and not self.llm.circuit_open
+            and is_structured_query(question)
+            and self.sql_engine.has_databases()
+        )
+
+    def try_sql_answer(self, question: str, file_hint: str | None = None) -> SQLAnswer | None:
+        """Tente le chemin text-to-SQL. Retourne ``None`` (jamais ne lève)
+        si la génération/validation/exécution échoue à n'importe quelle
+        étape, pour permettre à l'appelant de retomber sur le RAG vectoriel
+        sans jamais casser la conversation.
+        """
+        if not self.should_attempt_sql(question):
+            return None
+        try:
+            return self.sql_engine.answer(question, self.llm, file_hint=file_hint)
+        except (SQLGenerationError, SQLSafetyError) as e:
+            logger.info("Text-to-SQL path declined for %r: %s", question[:80], e)
+            return None
+        except Exception as e:
+            logger.warning("Text-to-SQL path failed for %r: %s", question[:80], e)
+            return None
+
     def answer(self, question: str) -> tuple[str, list[dict[str, Any]]]:
         """
-        Répond à une question en passant par le pipeline RAG complet.
+        Répond à une question en passant par le pipeline text-to-SQL si elle
+        est structurée/agrégée et qu'une base est disponible (résultat exact,
+        sans hallucination possible sur les chiffres) ; sinon par le
+        pipeline RAG complet (retrieval + génération).
 
         Returns:
             (reponse_generee, contextes_recuperes)
         """
+        sql_result = self.try_sql_answer(question)
+        if sql_result is not None:
+            contexts = [
+                {
+                    "content": f"SQL executed on {sql_result.db_file}:\n{sql_result.sql}",
+                    "score": 1.0,
+                    "source": sql_result.db_file,
+                    "page": "SQL",
+                }
+            ]
+            return sql_result.answer_html, contexts
+
         # 1. Filtre par fichier si la question nomme explicitement un document
         #    (ex. « cherche dans CV_BENMOUH_Mohamed.pdf ») → recherche ciblée.
         where = _extract_document_filter(question, self.vector_store)

@@ -22,7 +22,7 @@ from app.ingestion.parser import ParsedDocument, ParsedPage, ExtractionMethod
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 512
-DEFAULT_CHUNK_OVERLAP = 100
+DEFAULT_CHUNK_OVERLAP = 50  # conformité CDC : fenêtre glissante 512 tokens, overlap 50
 DEFAULT_TOKENIZER_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 SECTION_HEADER_PATTERN = re.compile(
@@ -74,6 +74,29 @@ class TextChunk:
         }
         base.update(self.metadata)
         return base
+
+
+@lru_cache(maxsize=4)
+def _load_tokenizer(tokenizer_model: str):
+    """Charge (et met en cache) le tokenizer HuggingFace pour un modèle donné.
+
+    Cache au niveau module, indexé par nom de modèle — et non une méthode
+    ``@lru_cache`` sur l'instance comme précédemment. Un ``AdaptiveChunker``
+    est recréé à chaque ingestion (``ingest_document``, ``ingest_sql``,
+    watcher), donc un cache indexé sur ``self`` avec ``maxsize=1`` ratait
+    systématiquement (nouvelle instance = nouvelle clé) et rechargeait le
+    tokenizer depuis le disque à chaque upload. Ici, deux instances utilisant
+    le même modèle partagent le même tokenizer déjà chargé.
+    """
+    try:
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained(tokenizer_model)
+    except ImportError as exc:
+        raise ImportError(
+            "transformers requis pour le comptage de tokens. "
+            "Installez sentence-transformers."
+        ) from exc
 
 
 class AdaptiveChunker:
@@ -363,17 +386,8 @@ class AdaptiveChunker:
 
         return sections
 
-    @lru_cache(maxsize=1)
     def _get_tokenizer(self):
-        try:
-            from transformers import AutoTokenizer
-
-            return AutoTokenizer.from_pretrained(self.tokenizer_model)
-        except ImportError as exc:
-            raise ImportError(
-                "transformers requis pour le comptage de tokens. "
-                "Installez sentence-transformers."
-            ) from exc
+        return _load_tokenizer(self.tokenizer_model)
 
     def _encode(self, text: str) -> list[int]:
         tokenizer = self._get_tokenizer()

@@ -10,6 +10,7 @@ Tables:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 import sqlite3
@@ -35,7 +36,11 @@ def _verify_password(stored: str, password: str) -> bool:
     if "$" not in stored:
         return False
     salt, _ = stored.split("$", 1)
-    return _hash_password(password, salt) == stored
+    # hmac.compare_digest avoids leaking timing information about how many
+    # leading characters of the hash matched (the docstring in create_user()
+    # already claims a constant-time comparison — a plain `==` did not
+    # provide that).
+    return hmac.compare_digest(_hash_password(password, salt), stored)
 
 
 def _is_none_string(val: Any) -> bool:
@@ -148,7 +153,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS conversations (
                     conv_id     INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id     INTEGER NOT NULL,
-                    title       TEXT NOT NULL DEFAULT 'Nouvelle conversation',
+                    title       TEXT NOT NULL DEFAULT 'New conversation',
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -353,6 +358,21 @@ class Database:
                 "SELECT COALESCE(SUM(chunk_count), 0) as total FROM doc_versions",
             ).fetchone()
         return row["total"] if row else 0
+
+    def delete_document(self, filename: str) -> int:
+        """Supprime tout l'historique de version d'un fichier (toutes versions).
+
+        À appeler chaque fois que les chunks d'un fichier sont retirés du
+        vector store (bouton « Delete File »). Sans cela, ``get_file_hash``
+        continuerait de renvoyer le hash de l'ancien contenu : ré-uploader
+        le même fichier après suppression serait alors silencieusement
+        traité comme « déjà indexé, rien à faire » alors que ChromaDB est
+        vide pour ce fichier.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM doc_versions WHERE filename = ?", (filename,))
+            conn.commit()
+            return cursor.rowcount
 
     # ── Chat history persistence ───────────────────────────────────────────
 

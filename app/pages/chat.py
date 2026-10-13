@@ -21,6 +21,7 @@ from app.app_ui import (
     truncate_snippet,
 )
 from app.core.rag_engine import _extract_document_filter, build_search_query
+from app.core.sql_query_engine import is_structured_query
 
 logger = logging.getLogger("rag_ui")
 
@@ -195,36 +196,70 @@ def render_chat_page() -> None:
 
         query_start_time = time.time()
 
+        # Historique de conversation (hors message courant) — sert à la
+        # réécriture des questions de suivi, à la génération, et à la
+        # détection d'intention structurée (chemin text-to-SQL).
+        conv_history = [
+            {"role": m["role"], "content": m.get("content", "")}
+            for m in st.session_state["messages"][:-1]
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+
+        # Suivi conversationnel : « and now ? » devient une requête autonome
+        # adossée à la dernière question ; un fichier nommé dans la question
+        # déclenche une recherche ciblée (filtre ``where``) ou sélectionne la
+        # base SQLite à interroger côté text-to-SQL.
+        search_query = build_search_query(user_query, conv_history)
+        db_file_hint = selected_file_filter if selected_file_filter != "All Documents" else None
+
+        handled = False
+        full_response = ""
+        source_payloads: list[dict] = []
+        citations: list[dict] = []
+
         # Intent guard: short conversational greetings skip retrieval entirely.
         if is_greeting(user_query):
             full_response = GREETING_RESPONSE
-            source_payloads: list[dict] = []
-            citations: list[dict] = []
+            handled = True
         elif rag.llm is not None and rag.llm.circuit_open:
             # M2 — circuit breaker ouvert : réponse gracieuse immédiate, sans
             # passer par le retriever ni le LLM (le trafic réseau est inutile).
             full_response = (
-                "Ollama est temporairement indisponible (trop d'échecs récents). "
-                "Vérifiez que le service est démarré, puis réessayez."
+                "Ollama is temporarily unavailable (too many recent failures). "
+                "Check that the service is running, and try again."
             )
-            results = []
-            formatted_context = ""
-            source_payloads: list[dict] = []
-            citations: list[dict] = []
             st.warning(full_response)
-        else:
-            # Historique de conversation (hors message courant) — sert à la
-            # réécriture des questions de suivi et à la génération.
-            conv_history = [
-                {"role": m["role"], "content": m.get("content", "")}
-                for m in st.session_state["messages"][:-1]
-                if m.get("role") in ("user", "assistant") and m.get("content")
-            ]
+            handled = True
+        elif rag.should_attempt_sql(search_query):
+            # Chemin text-to-SQL : la question ressemble à une agrégation ou
+            # à un filtre structuré (« combien », « average », « top 5 »...)
+            # et au moins une base SQLite a été ingérée. On génère une
+            # requête SQL depuis le vrai schéma, on l'exécute en lecture
+            # seule, et on renvoie le résultat exact — sans repasser par le
+            # LLM pour reformuler les chiffres. Tout échec (génération,
+            # validation, exécution) retombe silencieusement sur le
+            # pipeline RAG classique ci-dessous.
+            with st.status("1. Detecting a structured/aggregate question...", expanded=True) as status:
+                status.update(label="2. Generating SQL from the database schema...", state="running")
+                sql_result = rag.try_sql_answer(search_query, file_hint=db_file_hint)
+                if sql_result is not None:
+                    status.update(label="3. Executing against the SQLite database...", state="running")
+                    full_response = sql_result.answer_html
+                    source_payloads = [{
+                        "content": f"SQL executed on {sql_result.db_file}:\n{sql_result.sql}",
+                        "score": 1.0,
+                        "source_file": sql_result.db_file,
+                        "page_number": "SQL",
+                    }]
+                    status.update(label="Response ready (SQL query).", state="complete")
+                    handled = True
+                else:
+                    status.update(
+                        label="Structured query path unavailable — falling back to document search...",
+                        state="error",
+                    )
 
-            # Suivi conversationnel : « and now ? » devient une requête autonome
-            # adossée à la dernière question ; un fichier nommé dans la question
-            # déclenche une recherche ciblée (filtre ``where``).
-            search_query = build_search_query(user_query, conv_history)
+        if not handled:
             where = _extract_document_filter(search_query, rag.vector_store)
             if where is None and selected_file_filter != "All Documents":
                 where = {"source_file": selected_file_filter}

@@ -1,0 +1,65 @@
+@startuml
+' Sequence diagram: Evaluation
+title Séquence Évaluation - Pipeline Ragas
+
+' Actors
+actor "Administrateur" as ADMIN
+participant "Streamlit UI" as UI
+participant "RAGEngine" as RE
+participant "Database" as DB
+participant "Query Logger" as QL
+participant "Ollama LLM" as LLM
+participant "ChromaDB" as CDB
+
+' Lifelines
+participant ADMIN
+participant UI
+participant RE
+participant DB
+participant QL
+participant LLM
+participant CDB
+
+' ==========================================
+' FLOW: Ragas Evaluation
+' ==========================================
+
+ADMIN -> UI: Clique "Run local evaluation"
+UI -> UI: demande confirmation + limite (défaut 30 questions)
+ADMIN -> UI: Accepte paramètres (timeout, limit)
+
+UI -> RE: run_evaluation(progress_callback, timeout_seconds)
+RE -> RE: setup_ragas_evaluator() avec Ollama juge
+RE -> DB: vérifie gold dataset existence
+
+note right of RE: Pour chaque question du Gold Dataset (~30) :
+  1. RAGEngine.answer(question) → réponse + contextes
+  2. _run_with_timeout() avec NFR-04 budget par question
+  3. Ragas scoring: faithfulness, answer_relevancy,\n     context_precision, context_recall
+  4. Collecter EvalResult pour chaque cas
+end
+
+RE -> DB: setup_ragas_evaluator() configure juge Mistral
+RE -> LLM: health_check + préparation evaluator
+LLM -- RE: modèle disponible / mode retrieval-only
+
+note right of RE: Mode evaluation :
+  - EVALUATION_RETRIEVAL_ONLY=1 → only retrieval metrics
+  - Sinon → 4 métriques avec juge Ollama
+end
+
+RE -> UI: progress_callback(mise à jour barre)
+UI -> UI: update_progress_bar(question_idx / total)
+
+' Export results
+UI -> RE: export_results(results, output_path)
+RE -> DB/FS: write CSV data/evaluation_report.csv
+UI -> QL: log export evaluation
+QL --: entry dans query_logs.db
+
+' Summary
+UI -> ADMIN: affichage 4 cartes métriques
+UI -> ADMIN: tableau détaillé rapport CSV
+UI -> ADMIN: valeurs entre 0 et 1 par métrique
+
+@enduml

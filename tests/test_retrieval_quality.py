@@ -154,6 +154,127 @@ class TestRetrieveWhereFiltersBm25:
         assert len(results) == 2  # aucun résultat écarté par le seuil par défaut
 
 
+class TestRerankAndDedup:
+    """Correctifs qualité : déduplication des chunks identiques + fusion douce
+    RRF/CrossEncoder pour ne pas laisser le reranker anglais écraser la
+    pertinence hybride sur du contenu français."""
+
+    def test_duplicate_content_deduped(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        class _FakeVS:
+            def search(self, query, top_k, where=None):
+                return [
+                    _search_result("a1", "texte identique", 0.9),
+                    _search_result("a2", "texte identique", 0.85),
+                    _search_result("a3", "texte identique", 0.8),
+                    _search_result("b1", "texte différent", 0.7),
+                ]
+
+            def count(self):
+                return 4
+
+            def get_all_documents(self):
+                return [
+                    {"id": x.id, "text": x.content, "metadata": x.metadata}
+                    for x in [
+                        _search_result("a1", "texte identique", 0.9),
+                        _search_result("a2", "texte identique", 0.85),
+                        _search_result("a3", "texte identique", 0.8),
+                        _search_result("b1", "texte différent", 0.7),
+                    ]
+                ]
+
+        monkeypatch.setattr(r, "USE_HYBRID", True)
+        monkeypatch.setattr(r, "USE_HYDE", False)
+        monkeypatch.setattr(r, "_get_cross_encoder", lambda: None)
+
+        retriever = r.Retriever(_FakeVS())
+        # On force un BM25 vide pour isoler le test de déduplication.
+        class _NoBM25:
+            def __call__(self, query, top_k):
+                return []
+        monkeypatch.setattr(retriever, "_bm25_search", _NoBM25())
+
+        results = retriever.retrieve("question", top_k=6)
+        contents = [res.content.strip() for res in results]
+        assert len(contents) == len(set(contents)), "les chunks identiques doivent être dédupliqués"
+        assert "texte identique" in contents
+
+    def test_rerank_blends_rrf_and_ce(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        class _FakeVS:
+            def search(self, query, top_k, where=None):
+                # RRF très favorable au chunk B, défavorable à A.
+                return [
+                    _search_result("A", "Contenu pertinent pour B mais haut CE", 1.0),
+                    _search_result("B", "chunk B royal", 0.05),
+                ]
+
+            def count(self):
+                return 2
+
+            def get_all_documents(self):
+                return [{"id": "A", "text": "Contenu pertinent pour B mais haut CE", "metadata": {}},
+                        {"id": "B", "text": "chunk B royal", "metadata": {}}]
+
+        class _CE:
+            def predict(self, pairs):
+                # CE (anglais) très confiant sur A, faible sur B.
+                return [5.0, 1.0]
+
+        monkeypatch.setattr(r, "USE_HYBRID", True)
+        monkeypatch.setattr(r, "USE_HYDE", False)
+        monkeypatch.setattr(r, "RERANK_CE_WEIGHT", 0.35)
+        monkeypatch.setattr(r, "_get_cross_encoder", lambda: _CE())
+
+        class _NoBM25:
+            def __call__(self, query, top_k):
+                return []
+        retriever = r.Retriever(_FakeVS())
+        monkeypatch.setattr(retriever, "_bm25_search", _NoBM25())
+
+        results = retriever.retrieve("question", top_k=2)
+        assert len(results) == 2
+
+    def test_rerank_low_weight_is_deviation_guarded(self, monkeypatch):
+        """Un score CE parfaitement plat ne doit pas faire planter la fusion."""
+        from app.retrieval import retriever as r
+
+        class _FakeVS:
+            def search(self, query, top_k, where=None):
+                return [
+                    _search_result("A", "contenu A", 0.9),
+                    _search_result("B", "contenu B", 0.5),
+                ]
+
+            def count(self):
+                return 2
+
+            def get_all_documents(self):
+                return [{"id": "A", "text": "contenu A", "metadata": {}},
+                        {"id": "B", "text": "contenu B", "metadata": {}}]
+
+        class _CE:
+            def predict(self, pairs):
+                return [0.7, 0.7]  # scores CE plats
+
+        monkeypatch.setattr(r, "USE_HYBRID", True)
+        monkeypatch.setattr(r, "USE_HYDE", False)
+        monkeypatch.setattr(r, "RERANK_CE_WEIGHT", 0.35)
+        monkeypatch.setattr(r, "_get_cross_encoder", lambda: _CE())
+
+        retriever = r.Retriever(_FakeVS())
+        class _NoBM25:
+            def __call__(self, query, top_k):
+                return []
+        monkeypatch.setattr(retriever, "_bm25_search", _NoBM25())
+
+        results = retriever.retrieve("question", top_k=2)
+        assert len(results) == 2
+
+
 class TestAnswerPassesDocumentFilter:
     """answer() transmet le filtre ``where`` détecté au retriever."""
 
@@ -163,6 +284,8 @@ class TestAnswerPassesDocumentFilter:
         engine = object.__new__(RAGEngine)
         engine.top_k = 6
         engine.min_score = 0.0
+        engine._structured_db = None
+        engine._structured_db_path = None
 
         captured: dict = {}
 
@@ -221,6 +344,77 @@ class TestFollowupRewrite:
         from app.core.rag_engine import build_search_query
 
         assert build_search_query("and now ?", []) == "and now ?"
+
+
+class TestAcronymExpansion:
+    """Expansion d'acronymes dérivée du corpus (glossaire) pour les questions
+    définitionnelles — ex. « Qu'est-ce que le système RAG ? » → ajoute
+    « Retrieval-Augmented Generation » pour retrouver la définition exacte."""
+
+    def _fake_vs(self, docs: list[dict]):
+        class _VS:
+            def get_all_documents(self):
+                return docs
+
+            def count(self):
+                return len(docs)
+
+        return _VS()
+
+    def _mapping(self):
+        return {
+            "RAG": "Retrieval-Augmented Generation",
+            "LLM": "Large Language Model",
+        }
+
+    def test_definition_question_expands(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        monkeypatch.setattr(r, "_acronym_map", None)
+        monkeypatch.setattr(r, "_acronym_map_count", 0)
+        vs = self._fake_vs([])
+        monkeypatch.setattr(r, "_extract_acronym_map", lambda docs: self._mapping())
+
+        out = r._expand_query_acronyms("Qu'est-ce que le système RAG ?", vs)
+        assert "Retrieval-Augmented Generation" in out
+        assert out.startswith("Qu'est-ce que le système RAG ?")
+
+    def test_non_definition_question_unchanged(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        monkeypatch.setattr(r, "_acronym_map", self._mapping())
+        q = "Quelle est la technologie choisie pour le LLM local ?"
+        assert r._expand_query_acronyms(q, self._fake_vs([])) == q
+
+    def test_ragas_term_does_not_match_rag(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        monkeypatch.setattr(r, "_acronym_map", self._mapping())
+        q = "Qu'est-ce que le framework RAGAS ?"
+        assert r._expand_query_acronyms(q, self._fake_vs([])) == q
+
+    def test_empty_mapping_unchanged(self, monkeypatch):
+        from app.retrieval import retriever as r
+
+        monkeypatch.setattr(r, "_acronym_map", {})
+        q = "Qu'est-ce qu'un chunk ?"
+        assert r._expand_query_acronyms(q, self._fake_vs([])) == q
+
+    def test_extract_from_glossary_chunks(self):
+        from app.retrieval import retriever as r
+
+        docs = [
+            {"text": "RAG\nRetrieval-Augmented Generation — technique combinant recherche\n"
+                     "documentaire et génération de texte par LLM."},
+            {"text": "LLM\nLarge Language Model — modèle de langage de grande taille."},
+            {"text": "Chunk\nFragment de texte issu du découpage d'un document."},
+            {"text": "SOME TITLE\nPas une entrée, pas de tiret."},
+        ]
+        mapping = r._extract_acronym_map(docs)
+        assert mapping.get("RAG") == "Retrieval-Augmented Generation"
+        assert mapping.get("LLM") == "Large Language Model"
+        assert "Chunk" not in mapping  # pas de « — » dans sa ligne de description
+        assert "SOME TITLE" not in mapping
 
 
 class TestCrossEncoderLocalResolution:

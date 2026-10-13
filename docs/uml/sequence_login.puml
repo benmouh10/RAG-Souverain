@@ -1,0 +1,50 @@
+@startuml
+' Sequence diagram: Authentication/login
+title Séquence Login - Authentification utilisateur
+
+' Actors
+actor "Utilisateur" as USER
+participant "Streamlit UI" as UI
+participant "Database" as DB
+participant "Session State" as SS
+
+' Lifelines
+participant USER
+participant UI
+participant DB
+participant SS
+
+' ==========================================
+' FLOW: Authentication
+' ==========================================
+
+USER -> UI: Saisie username + password
+UI -> DB: authenticate(username, password)
+DB -> DB: _verify_password(stored_hash, password) temps constant
+alt Credentials valides
+  DB -- UI: retourne User object (user_id, username, role)
+  UI -> SS: sign_in(user_id, username, role)
+  SS -- UI: session établie (user_id, role)
+  UI -> UI: rendu page selon rôle
+  alt Rôle admin
+    UI -> USER: page admin (6 onglets)
+  else Rôle user
+    UI -> USER: page user (Chat + Fichiers)
+  end
+  UI -> QL: log successful authentication
+  QL --: entry dans query_logs.db
+else Identifiants invalides
+  UI -> USER: Message d'erreur "Identifiants incorrects"
+  UI -> UI: count échecs (non implémenté verrouillage)
+  UI -> QL: log failed authentication
+  QL --: entry dans query_logs.db
+end
+
+' Déconnexion
+USER -> UI: Clique "Sign Out"
+UI -> DB: clear_chat_history(user_id)
+DB --: confirmation
+SS -> UI: session nettoyée
+UI -> USER: Redirection page de connexion
+
+@enduml

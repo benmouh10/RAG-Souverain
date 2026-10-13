@@ -1,0 +1,51 @@
+@startuml
+' Sequence diagram: Performance monitoring
+title Séquence Performance - Monitoring et métriques
+
+' Actors
+actor "Administrateur" as ADMIN
+participant "Streamlit UI" as UI
+participant "Database" as DB
+participant "Query Logger" as QL
+
+' Lifelines
+participant ADMIN
+participant UI
+participant DB
+participant QL
+
+' ==========================================
+' FLOW: Performance Monitoring
+' ==========================================
+
+ADMIN -> UI: Accède à "Performance" page
+UI -> DB: get_stats(limit) lecture query_logs.db
+DB -> DB: SELECT avg(latency), count(*), avg(score)
+DB -- UI: données agrégat: latence moyenne, volume, scores
+
+UI -> UI: affichage cartes statistiques:
+' - Latence moyenne (ms)
+' - Volume de requêtes (total)
+' - Score moyen
+' - Graphiques temporels
+
+' Filtres temporels optionnels
+ADMIN -> UI: Sélectionne période (today / week / month)
+UI -> DB: get_stats with date filter
+DB -- UI: statistiques filtrées
+
+' Diagnostic détaillé
+ADMIN -> UI: Clique "View details" sur une entrée
+UI -> DB: get_recent(limit=100)
+DB -- UI: dernières requêtes avec :
+  • timestamp, user, question, scores
+  • modèle utilisé, source_files
+  • latence totale, latence LLM
+
+' Export option
+ADMIN -> UI: Clique "Export CSV"
+UI -> DB: export query data
+UI -> QL: log export performance
+QL --: entry dans query_logs.db
+
+@enduml

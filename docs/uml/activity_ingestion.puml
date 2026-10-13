@@ -1,0 +1,52 @@
+@startuml
+' Activity diagram: Ingestion flow
+title Diagramme d'activité - Flot d'ingestion
+
+' Start
+start
+:Administrateur uploade un fichier;
+
+' File type check
+:Extension supportée ? (.pdf/.txt/.md/.csv/.sql);
+alt Non
+:Message "Format non supporté";
+stop
+else Oui
+end
+
+' Parsing
+:DocumentParser.parse_file();
+:ParsedDocument créé (pages + extraction_method);
+
+' Chunking
+:AdaptiveChunker.chunk_document();
+:list[TextChunk] créé (stratégie adaptative);
+
+' Hash check (deduplication)
+:compute_file_hash();
+:Database.get_file_hash(filename);
+alt Fichier identique
+:Message "Déjà indexé - aucun action";
+stop
+else Fichier modifié/nouveau
+end
+
+' Version management
+:Database.record_ingestion(filename, file_hash, chunk_count);
+:Version incrémentée globalement;
+
+' Chunk versioning
+:dataclasses.replace(chunk, version=new_version);
+:TextChunk immuable avec version;
+
+' Vector store indexing
+:ChromaVectorStore.add_chunks(chunks);
+:Embeddings + upsert ChromaDB;
+
+' UI update
+:Compteur chunks mis à jour;
+:Fichier visible dans "Indexed Files";
+
+stop.
+
+@enduml

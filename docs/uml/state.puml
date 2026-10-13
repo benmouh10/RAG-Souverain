@@ -1,0 +1,30 @@
+@startuml
+' State diagram: Document lifecycle
+title Diagram d'états - Cycle de vie d'un document
+
+' States
+state "non_indexed" : Fichier présent mais non indexé
+state "ingesting" : Traitement en cours (parse → chunk → embed)
+state "indexed" : Document indexé dans ChromaDB
+state "versioning" : Nouvelle version en cours (ancienne supprimée, nouvelle ajoutée)
+state "error" : Échec d'indexation
+state "deleted" : Chunks retirés de l'index
+
+' Initial state
+ [*] --> non_indexed : Upload fichier
+
+' Transitions
+non_indexed --> ingesting : Bouton "Index" ou nouvel upload
+ingesting --> indexed : Succès pipeline parse/chunk/embed
+ingesting --> error : Échec (format, OCR, ChromaDB)
+indexed --> versioning : Nouveau fichier même nom + différent hash
+versioning --> indexed : Nouvelle version indexée
+error --> ingesting : Correction + ré-upload
+deleted --> ingesting : Rétablissement (re-indexation)
+
+' Notes
+note right of non_indexed: Fichier uploadé vers data/uploads/
+note right of error: Format non supporté / OCR échoué / erreur ChromaDB
+note right of versioning: Version globalement incrémentée par filename (C1/Mo4)
+
+@enduml

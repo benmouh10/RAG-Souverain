@@ -20,14 +20,25 @@ services:
       - "8501:8501"
 
     # ── Volumes persistants ──
-    # ChromaDB : la base vectorielle survit aux redémarrages
-    # Documents : permet d'ajouter des fichiers sans rebuild
-    # Modèle cache : pré-chargé dans l'image, mais en volume pour flexibilité
+    # Tout ./data est monté d'un bloc (ChromaDB, rag.db, query_logs.db,
+    # bm25_cache.pkl, uploads, evaluation_report.csv...), puis ./data/documents
+    # est re-monté en lecture seule par-dessus pour empêcher l'app d'y écrire.
+    #
+    # AVANT : les fichiers SQLite (rag.db, query_logs.db) et un fichier
+    # "active_rag.db" qui ne correspond à AUCUN chemin utilisé par le code
+    # (grep introuvable dans app/*.py — mount mort) étaient montés
+    # individuellement en tant que fichiers. Docker Compose crée
+    # automatiquement le chemin hôte manquant s'il n'existe pas déjà — mais
+    # UNIQUEMENT en tant que RÉPERTOIRE, jamais en tant que fichier vide. Au
+    # premier `docker compose up` sur une machine neuve (avant qu'aucun
+    # ./data/rag.db n'existe sur l'hôte), Docker créait donc un DOSSIER
+    # /app/data/rag.db dans le conteneur, et sqlite3.connect() plantait avec
+    # "unable to open database file" car il tentait d'ouvrir un répertoire
+    # comme fichier de base de données. Monter tout le dossier ./data (qui,
+    # lui, existe réellement) élimine ce piège.
     volumes:
-      - ./data/chroma:/app/data/chroma
-      - ./data/rag.db:/app/data/rag.db
+      - ./data:/app/data
       - ./data/documents:/app/data/documents:ro
-      - ./data/evaluation_report.csv:/app/data/evaluation_report.csv
 
     # ── Accès à Ollama sur la machine hôte ──
     # host.docker.internal pointe vers l'hôte Windows/Mac/Linux
@@ -36,8 +47,13 @@ services:
       - "host.docker.internal:host-gateway"
 
     # ── Variables d'environnement ──
+    # `required: false` : un .env absent ne doit pas empêcher `docker compose
+    # up` de démarrer (toutes les variables utilisées ont déjà une valeur par
+    # défaut ci-dessous ou dans le Dockerfile) — avant, un projet fraîchement
+    # cloné sans .env échouait immédiatement avec "env file not found".
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - HF_HOME=/app/.cache/huggingface
@@ -88,7 +104,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - HF_HOME=/app/.cache/huggingface

@@ -47,12 +47,6 @@ def _load_llm_class() -> Any:
     return OllamaLLM
 
 
-def _load_ingestion_helpers() -> tuple[Any, Any]:
-    from app.ingestion.chunker import AdaptiveChunker
-    from app.ingestion.parser import DocumentParser
-    return AdaptiveChunker, DocumentParser
-
-
 def _load_database() -> Any:
     from app.database import Database
     return Database
@@ -243,10 +237,22 @@ def get_chroma_count(rag: Any) -> int:
 def delete_file_from_vector_store(filename: str, rag: Any | None = None) -> int:
     """Delete every vector chunk belonging to ``filename`` from the shared store.
 
+    Also clears the file's version history from SQLite (``doc_versions``).
+    Without this, get_file_hash() would keep returning the old content hash
+    after deletion, so re-uploading the exact same file would be silently
+    treated as "already indexed, nothing to do" even though ChromaDB is now
+    empty for that file.
+
     Returns the number of chunks removed (0 if the file is not present).
     """
     active_rag = rag or init_rag_engine()
-    return active_rag.vector_store.delete_by_source(filename)
+    removed = active_rag.vector_store.delete_by_source(filename)
+    try:
+        Database = _load_database()
+        Database().delete_document(filename)
+    except Exception:
+        logger.exception("Failed to clear doc_versions history for '%s'", filename)
+    return removed
 
 
 def aggregate_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -279,12 +285,21 @@ def compute_cosine_score(rag: Any, query: str) -> float:
 # Ingestion with typed errors
 # ---------------------------------------------------------------------------
 def ingest_uploaded_file(uploaded_file, rag: Any | None = None) -> tuple[int, str]:
+    """Persist and index one uploaded file.
+
+    Routed entirely through ``RAGEngine.ingest_sql`` / ``RAGEngine.ingest_document``
+    (never a hand-rolled parse+chunk+add here) so that every upload gets the
+    same hash-based dedup and version tracking: re-uploading an unchanged
+    file is a no-op, and re-uploading a changed file replaces its old chunks
+    instead of piling duplicates on top of them in ChromaDB.
+    """
     active_rag = rag or init_rag_engine()
     upload_dir = PROJECT_ROOT / "data" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = upload_dir / uploaded_file.name
-    file_path.write_bytes(uploaded_file.getvalue())
+    file_data = uploaded_file.getvalue()
+    file_path.write_bytes(file_data)
 
     suffix = file_path.suffix.lower()
 
@@ -293,22 +308,10 @@ def ingest_uploaded_file(uploaded_file, rag: Any | None = None) -> tuple[int, st
             added = active_rag.ingest_sql(file_path)
             return added, file_path.name
 
-        AdaptiveChunker, DocumentParser = _load_ingestion_helpers()
-        parser = DocumentParser()
-        parsed_documents = parser.parse_file(file_path)
-
-        if parsed_documents.page_count == 0:
-            raise IngestError(f"File '{file_path.name}' contains no usable content.")
-
         chunk_size = st.session_state.get("chunk_size", 512)
-        chunker = AdaptiveChunker(chunk_size=chunk_size)
-        chunks = chunker.chunk_documents([parsed_documents])
-
-        if not chunks:
-            raise IngestError(f"No chunks generated from '{file_path.name}'. Check the file format.")
-
-        added = active_rag.vector_store.add_chunks(chunks)
-        active_rag.vector_store.initialize_collection()
+        added, _version = active_rag.ingest_document(
+            file_path, file_path.name, file_data, chunk_size=chunk_size
+        )
         return added, file_path.name
 
     except IngestError:

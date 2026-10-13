@@ -1,0 +1,56 @@
+@startuml
+' Activity diagram: Chat flow
+title Diagramme d'activité - Flot de chat
+
+' Start
+start
+:Utilisateur pose une question;
+
+' Conditional: Is greeting?
+fork
+:Détection is_greeting(query);
+alt Oui
+:Réponse immédiate salutation;
+stop
+else Non
+end
+
+' Conditional: Circuit breaker open?
+:Vérifier circuit_open (Ollama health);
+alt Circuit ouvert
+:Afficher message "Ollama indisponible";
+stop
+else Circuit fermé
+end
+
+' Conditional: Is SQL query?
+fork
+:should_attempt_sql(question);
+alt Oui
+:Pipeline text-to-SQL;
+stop
+else Non
+end
+
+' Main RAG flow
+:build_search_query(question, history);
+:Filtre fichier _extract_document_filter;
+:Retriever.retrieve() (vectoriel + BM25 + RRF + reranking);
+:format_context(results);
+
+' Generate response
+:OllamaLLM.generate_stream(question, context);
+loop Streaming
+:Token par token;
+end
+
+:Déduplication sources;
+:Afficher réponse avec citations [1], [2]...;
+
+' Loggning
+:QueryLogger.log();
+:Persistance SQLite;
+
+stop.
+
+@enduml

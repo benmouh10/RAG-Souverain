@@ -1,0 +1,71 @@
+@startuml
+' Sequence diagram: User management
+title Séquence User Management - Gestion des comptes admin
+
+' Actors
+actor "Administrateur" as ADMIN
+participant "Streamlit UI" as UI
+participant "Database" as DB
+participant "Session State" as SS
+
+' Lifelines
+participant ADMIN
+participant UI
+participant DB
+participant SS
+
+' ==========================================
+' FLOW: User Management
+' ==========================================
+
+ADMIN -> UI: Accède à "User Management" page
+UI -> DB: list_users()
+DB -- UI: liste des utilisateurs avec rôles
+
+' --- CREATE USER ---
+ADMIN -> UI: Remplit formulaire (username, password, role)
+UI -> DB: create_user(username, password, role)
+DB -> DB: _hash_password(password, sel aléatoire)
+DB -> DB: INSERT INTO users
+DB -- UI: User object (ou None si pseudo pris)
+alt Création réussie
+  UI -> UI: affichage "Utilisateur créé"
+  UI -> QL: log user creation
+  QL --: entry dans query_logs.db
+else Échec (pseudo existe)
+  UI -> UI: affichage "Ce pseudo est déjà pris"
+end
+
+' --- CHANGE PASSWORD ---
+ADMIN -> UI: Sélectionne utilisateur + nouveau mot de passe
+UI -> DB: change_password(user_id, new_password)
+DB -> DB: _hash_password(new_password)
+DB -> DB: UPDATE users SET password_hash
+DB -- UI: "Mot de passe mis à jour"
+UI -> QL: log password change
+QL --: entry dans query_logs.db
+
+' --- DELETE USER ---
+ADMIN -> UI: Clique "Supprimer" sur utilisateur
+UI -> DB: delete_user(user_id)
+DB -> DB: DELETE FROM users + cleanup conversations
+DB -- UI: "Utilisateur supprimé"
+UI -> QL: log user deletion
+QL --: entry dans query_logs.db
+
+' --- CHANGE ROLE ---
+ADMIN -> UI: Sélectionne utilisateur + nouveau rôle
+UI -> DB: (pas de méthode directe - UPDATE SQL)
+note right of UI: Exécute UPDATE users SET role = ?\nWHERE user_id = ?
+UI -> QL: log role change
+QL --: entry dans query_logs.db
+
+' ==========================================
+' NOTES
+' ==========================================
+
+note right of DB: Toutes opérations protégées\npar require_admin() défense en profondeur\
+note right of UI: Masquage UI + vérification RBAC\
+end note
+
+@enduml

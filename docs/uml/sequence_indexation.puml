@@ -1,0 +1,84 @@
+@startuml
+' Sequence diagram: Document indexation
+title Séquence Indexation - De l'upload au vecteur
+
+' Actors
+actor "Administrateur" as ADMIN
+participant "Streamlit UI" as UI
+participant "RAGEngine" as RE
+participant "Database" as DB
+participant "DocumentParser" as DP
+participant "AdaptiveChunker" as AC
+participant "ChromaVectorStore" as CVS
+participant "Query Logger" as QL
+
+' Lifelines
+participant ADMIN
+participant UI
+participant RE
+participant DB
+participant DP
+participant AC
+participant CVS
+participant QL
+
+' ==========================================
+' FLOW: Document ingestion
+' ==========================================
+
+ADMIN -> UI: Télécharge un fichier (PDF, TXT, MD, CSV, SQL)
+UI -> RE: ingest_uploaded_file(uploaded_file)
+RE -> RE: compute_file_hash(file_data)
+DB -> DB: get_file_hash(filename)
+alt Fichier identique (même hash)
+  DB -- RE: retourne hash existant
+  RE -> UI: "0 chunks, version X" (no-op)
+  stop
+else Fichier modifié ou nouveau
+  DB -- RE: nouveau hash
+  
+  ' 1. Parsing
+  UI -> DP: parse_file(file_path)
+  DP -> DP: selon extension (.pdf/.txt/.md/.csv/.sql)
+  alt PDF
+    DP -> DP: _parse_pdf() avec fallback OCR
+  elif TXT/MD
+    DP -> DP: _parse_text_file()
+  elif CSV
+    DP -> DP: lecture CSV
+  elif SQL
+    DP -> DP: SQLParser.parse_all_tables()
+  end
+  DP -- UI: ParsedDocument
+  
+  ' 2. Chunking
+  UI -> AC: chunk_documents([parsed_doc])
+  AC -> AC: selon stratégie (section/slide/table/SQL)
+  AC -> AC: TextChunk avec version, metadata
+  AC -- UI: list[TextChunk]
+  
+  ' 3. Suppression ancienne version
+  UI -> CVS: delete_by_source(filename)
+  CVS -- UI: nombre supprimé
+  
+  ' 4. Enregistrement version + taggage chunks
+  UI -> DB: record_ingestion(filename, file_hash, len(chunks))
+  DB -- UI: DocVersion (version incrémentée)
+  
+  ' Taggage immuable des chunks
+  note right of AC: dataclasses.replace(chunk, version=new_version)\nrend TextChunk immuable
+  
+  ' 5. Indexation vectorielle
+  UI -> CVS: add_chunks(chunks versionnés)
+  CVS -> CVS: embeddings (sentence-transformers)\n-upsert ChromaDB
+  CVS -- UI: nombre de chunks ajoutés
+  
+  ' 6. Journalisation
+  UI -> QL: log ingestion événement
+  QL --: entrée dans query_logs.db
+  
+  UI -> UI: Mise à jour interface:
+  UI -> ADMIN: "Document ingéré: N chunks, version M"
+end
+
+@enduml

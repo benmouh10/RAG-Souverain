@@ -4,6 +4,7 @@ data/evaluation_report.csv
 data/uploads/
 data/*.db
 data/*.sqlite3
+data/bm25_cache.pkl
 data/audit.log
 chroma.sqlite3
 tmp_*.py

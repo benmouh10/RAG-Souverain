@@ -67,12 +67,46 @@ _bm25_docs: list[dict[str, Any]] = []
 _bm25_collection_count = 0
 USE_HYBRID = os.getenv("USE_HYBRID_SEARCH", "true").lower() in ("true", "1", "yes")
 USE_HYDE = os.getenv("USE_HYDE", "false").lower() in ("true", "1", "yes")
+# Poids du reranker CrossEncoder dans la fusion finale (0.0 → RRF pur,
+# 1.0 → CE pur). Le CE ms-marco est entraîné sur de l'anglais : sur du
+# contenu français il peut hisser des chunks non pertinents en tête. On
+# garde le RRF comme signal dominant et on n'utilise le CE qu'en réordonneur
+# léger (valeur par défaut raisonnable pour des documents multilingues).
+RERANK_CE_WEIGHT = float(os.getenv("RERANK_CE_WEIGHT", "0.35"))
 _BM25_CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "bm25_cache.pkl"
 
 
+_ACCENT_LIGATURES = str.maketrans(
+    {"œ": "oe", "Œ": "oe", "æ": "ae", "Æ": "ae"}
+)
+
+_FRENCH_ACCENTS = str.maketrans(
+    "àâäáãåéèêëìíîïòóôöõùúûüçñ",
+    "aaaaaaeeeeiiiiooooouuuucn",
+)
+
+
+def _strip_accents(text: str) -> str:
+    """Retrait des accents pour un rapprochement BM25 insensible aux variantes
+    typographiques françaises (« génération » == « generation »)."""
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFKD", text).translate(_ACCENT_LIGATURES)
+    cleaned = "".join(c for c in normalized if not unicodedata.combining(c))
+    return cleaned.translate(_FRENCH_ACCENTS)
+
+
 def _tokenize(text: str) -> list[str]:
-    """Simple whitespace + lowercase tokenizer for BM25."""
-    return re.findall(r"\w+", text.lower())
+    """Tokenisation BM25 : minuscules + mots, avec variantes sans accents
+    pour ne pas rater les requêtes à orthographe francisée."""
+    tokens = re.findall(r"\w+", text.lower())
+    out: list[str] = []
+    for token in tokens:
+        out.append(token)
+        stripped = _strip_accents(token)
+        if stripped != token:
+            out.append(stripped)
+    return out
 
 
 def _save_bm25_cache(index: Any, docs: list[dict[str, Any]], count: int) -> None:
@@ -110,7 +144,11 @@ def _build_bm25_index(vector_store: ChromaVectorStore):
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
-        logger.warning("rank-bm25 not installed. Hybrid search disabled.")
+        logger.error(
+            "rank-bm25 n'est PAS installé : la recherche hybride (vector + BM25) "
+            "est désactivée, seule la recherche vectorielle est active. "
+            "Installez-le avec `pip install rank-bm25` (présent dans requirements.txt)."
+        )
         return
 
     all_docs = vector_store.get_all_documents()
@@ -145,6 +183,79 @@ def _ensure_bm25_index(vector_store: ChromaVectorStore):
     if _load_bm25_cache(current_count):
         return
     _build_bm25_index(vector_store)
+
+
+# ---------------------------------------------------------------------------
+# Expansion d'acronymes — glossaire dérivé du corpus
+# ---------------------------------------------------------------------------
+# Certaines questions définitionnelles (« Qu'est-ce que le système RAG ? »)
+# échouent à retrouver l'entrée du glossaire : le terme seul ne suffit pas à
+# rapprocher l'embedding de la définition. On construit — à partir du corpus
+# indexé — une table terme → expansion (ex. « RAG » → « Retrieval-Augmented
+# Generation ») et on l'injecte dans la requête de recherche pour les seules
+# questions définitionnelles. Aucun terme n'est codé en dur : la table est
+# dérivée des documents au premier usage.
+_acronym_map: dict[str, str] | None = None
+_acronym_map_count = 0
+
+# Une entrée de glossaire = une ligne « TERME » suivie d'une ligne contenant
+# un tiret cadratin (« — »), l'expansion étant le texte avant le tiret.
+_GLOSSARY_TERM_RE = re.compile(r"^[A-ZÀ-Ü][A-ZÀ-Ü0-9 \-]{1,14}$")
+
+_DEFINITION_QUERY_RE = re.compile(
+    r"(qu'?est-?ce que|c'est quoi|what is|que signifie|défini)", re.IGNORECASE
+)
+
+
+def _extract_acronym_map(docs: list[dict[str, Any]]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for doc in docs:
+        lines = (doc.get("text") or "").splitlines()
+        for i, line in enumerate(lines[:-1]):
+            term = line.strip()
+            if not _GLOSSARY_TERM_RE.match(term):
+                continue
+            nxt = lines[i + 1].strip()
+            if "—" not in nxt and "–" not in nxt:
+                continue
+            expansion = re.split(r"[—–]", nxt, maxsplit=1)[0].strip()
+            if not expansion or expansion.lower() == term.lower():
+                continue
+            mapping.setdefault(term, expansion[:60])
+    return mapping
+
+
+def _ensure_acronym_map(vector_store: ChromaVectorStore) -> dict[str, str]:
+    """(Re)construit la table terme → expansion quand la collection change."""
+    global _acronym_map, _acronym_map_count
+    current_count = vector_store.count()
+    if _acronym_map is not None and current_count == _acronym_map_count:
+        return _acronym_map
+    _acronym_map = _extract_acronym_map(vector_store.get_all_documents())
+    _acronym_map_count = current_count
+    if _acronym_map:
+        logger.info("Expansion d'acronymes prête (%d termes).", len(_acronym_map))
+    return _acronym_map
+
+
+def _expand_query_acronyms(
+    query: str, vector_store: ChromaVectorStore
+) -> str:
+    """Enrichit la requête avec l'expansion des termes qu'elle contient —
+    uniquement pour les questions définitionnelles (ex. « Qu'est-ce que le
+    système RAG ? » → ajoute « Retrieval-Augmented Generation »)."""
+    if not _DEFINITION_QUERY_RE.search(query):
+        return query
+    mapping = _ensure_acronym_map(vector_store)
+    if not mapping:
+        return query
+    additions: list[str] = []
+    for term, expansion in mapping.items():
+        if re.search(rf"\b{re.escape(term)}\b", query):
+            additions.append(expansion)
+    if not additions:
+        return query
+    return f"{query} {' '.join(additions)}"
 
 
 def _rrf_score(rank: int, k: int = 60) -> float:
@@ -197,13 +308,21 @@ class Retriever:
         else:
             search_text = query
 
+        # Step 1bis: expansion d'acronymes du corpus (glossaire) pour les
+        # questions définitionnelles — « RAG » → « Retrieval-Augmented
+        # Generation ». Améliore nettement le rappel des définitions exactes.
+        expanded = _expand_query_acronyms(search_text, self.vector_store)
+        if expanded != search_text:
+            logger.info("Query expansion: '%s'", expanded[:160])
+            search_text = expanded
+
         # Step 2: Vector search from ChromaDB
         vector_results = self.vector_store.search(search_text, top_k=fetch_count, where=where)
 
         if USE_HYBRID:
             # Step 2: BM25 keyword search
             _ensure_bm25_index(self.vector_store)
-            bm25_results = self._bm25_search(query, top_k=fetch_count)
+            bm25_results = self._bm25_search(search_text, top_k=fetch_count)
 
             # Un filtre ``where`` (fichier nommé dans la question) ne s'applique
             # qu'à la recherche vectorielle côté ChromaDB : on restreint aussi les
@@ -229,6 +348,19 @@ class Retriever:
             )
             return []
 
+        # Step 4bis: déduplication sur le contenu — le chunking de certains
+        # fichiers (PDF court, README) produit N chunks identiques qui
+        # monopolisent les top_k et polluent le contexte du LLM.
+        seen_content: set[str] = set()
+        deduped: list[SearchResult] = []
+        for r in filtered:
+            key = r.content.strip().lower()
+            if key and key not in seen_content:
+                seen_content.add(key)
+                deduped.append(r)
+        filtered = deduped
+        logger.info("Déduplication retrieval: %d chunks uniques.", len(filtered))
+
         # Step 5: Rerank with CrossEncoder
         cross_encoder = _get_cross_encoder()
         if cross_encoder is not None and len(filtered) > 1:
@@ -243,9 +375,31 @@ class Retriever:
                 try:
                     pairs = [(query, r.content) for r in filtered]
                     ce_scores = cross_encoder.predict(pairs)
-                    reranked = sorted(zip(ce_scores, filtered), key=lambda x: x[0], reverse=True)
+
+                    # Normalisation min-max des scores CE dans [0, 1].
+                    ce_min, ce_max = min(ce_scores), max(ce_scores)
+                    ce_norm = [
+                        (s - ce_min) / (ce_max - ce_min) if ce_max > ce_min else 0.5
+                        for s in ce_scores
+                    ]
+
+                    # Fusion douce score_final = (1-w)*RRF + w*CE. Le score RRF
+                    # (post-min-max) est déjà dans [0,1] et reflète fidèlement
+                    # la pertinence hybride (vecteur + BM25) ; le CE anglais est
+                    # volontairement pondéré faiblement pour ne pas dégrader le
+                    # français (ex. README bruité hissé en tête).
+                    blended = [
+                        (1.0 - RERANK_CE_WEIGHT) * r.score + RERANK_CE_WEIGHT * c
+                        for r, c in zip(filtered, ce_norm)
+                    ]
+                    reranked = sorted(
+                        zip(blended, filtered), key=lambda x: x[0], reverse=True
+                    )
                     final = [r for _, r in reranked[:top_k]]
-                    logger.info("CrossEncoder reranking: %d -> %d results.", len(filtered), len(final))
+                    logger.info(
+                        "CrossEncoder reranking (w=%.2f): %d -> %d results.",
+                        RERANK_CE_WEIGHT, len(filtered), len(final),
+                    )
                     return final
                 except Exception as e:
                     logger.warning("CrossEncoder reranking failed: %s. Using merged ranking.", e)
